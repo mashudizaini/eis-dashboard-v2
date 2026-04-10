@@ -1,4 +1,5 @@
 import { NavLink } from 'react-router-dom';
+import logoOnly from '../../assets/LOGO-ONLY.png';
 import {
   LayoutDashboard, TrendingUp, Factory, Rocket, Building2,
   FileSpreadsheet, Settings, LogOut, ChevronLeft, ChevronRight,
@@ -28,9 +29,7 @@ export default function Sidebar() {
     >
       {/* Logo */}
       <div className="px-4 py-5 border-b border-pharma-800 flex items-center gap-3">
-        <div className="w-9 h-9 rounded-lg bg-accent-gold flex items-center justify-center font-display font-bold text-pharma-950 text-sm shrink-0">
-          EIS
-        </div>
+        <img src={logoOnly} alt="Logo" className="w-9 h-9 object-contain shrink-0" />
         {!collapsed && (
           <div className="overflow-hidden">
             <div className="font-display font-semibold text-sm leading-tight">EIS Dashboard</div>
