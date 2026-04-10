@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --pharma-primary: #1a5a73;
+  --pharma-dark: #0f2a37;
+  --pharma-light: #e8f4f8;
+  --accent-gold: #d4a843;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'IBM Plex Sans', system-ui, sans-serif;
+  background: #f0f4f7;
+  color: #1e293b;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'DM Sans', system-ui, sans-serif;
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+@layer components {
+  .kpi-card {
+    @apply bg-white rounded-xl p-5 border border-gray-100 shadow-sm
+           hover:shadow-md transition-shadow duration-200;
+  }
+
+  .chart-container {
+    @apply bg-white rounded-xl p-5 border border-gray-100 shadow-sm;
+  }
+
+  .nav-item {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium
+           transition-all duration-150 cursor-pointer;
+  }
+
+  .nav-item-active {
+    @apply bg-pharma-700 text-white shadow-sm;
+  }
+
+  .nav-item-inactive {
+    @apply text-pharma-200 hover:bg-pharma-800 hover:text-white;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-success { @apply bg-emerald-50 text-emerald-700; }
+  .badge-warning { @apply bg-amber-50 text-amber-700; }
+  .badge-danger  { @apply bg-red-50 text-red-700; }
+  .badge-info    { @apply bg-blue-50 text-blue-700; }
+}

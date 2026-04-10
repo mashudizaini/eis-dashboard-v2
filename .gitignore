@@ -1,0 +1,29 @@
+# Secrets — never commit
+.env
+.env.local
+.env.server
+
+# Python
+*.pyc
+__pycache__/
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker volumes
+eis_postgres_data/
+eis_redis_data/
+
+# IDE
+.vscode/
+.idea/
