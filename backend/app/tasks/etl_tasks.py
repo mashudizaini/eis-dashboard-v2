@@ -673,46 +673,57 @@ def etl_production(year: int = None, month: int = None):
 
         rows = []
 
-        # ── Strategy 1: Oracle Process Manufacturing (OPM) ───────
+        # Build month clause for EXTRACT-based filter (confirmed working in TOAD)
+        month_clause = "AND EXTRACT(MONTH FROM gbh.actual_cmplt_date) = :month" if month else ""
+        wip_month_clause = "AND EXTRACT(MONTH FROM COALESCE(wdj.date_completed, wdj.last_update_date)) = :month" if month else ""
+        extract_params = {"year": year, "month": month} if month else {"year": year}
+
+        # ── Strategy 1: OPM via gme_batch_header + gme_material_details ──
+        # plan_qty / actual_qty are on the OUTPUT lines (line_type=1),
+        # not on the batch header itself (confirmed by diagnostic).
         try:
-            cur_ora.execute("""
+            logger.info(f"[etl_production] Trying OPM (header+material_details) year={year} month={month}")
+            cur_ora.execute(f"""
                 SELECT
                     TO_CHAR(gbh.actual_cmplt_date, 'YYYY-MM')  AS period,
-                    SUM(gbh.plan_qty)                           AS planned_qty,
-                    SUM(gbh.actual_qty)                         AS actual_qty
-                FROM gme_batch_header gbh
+                    SUM(NVL(gmd.plan_qty,   0))                 AS planned_qty,
+                    SUM(NVL(gmd.actual_qty, 0))                 AS actual_qty
+                FROM gme_batch_header     gbh
+                JOIN gme_material_details gmd
+                    ON gbh.batch_id = gmd.batch_id
                 WHERE gbh.batch_status IN (3, 4)
-                  AND gbh.actual_cmplt_date >= :date_from
-                  AND gbh.actual_cmplt_date <  :date_to
                   AND gbh.actual_cmplt_date IS NOT NULL
+                  AND gmd.line_type = 1
+                  AND EXTRACT(YEAR FROM gbh.actual_cmplt_date) = :year
+                  {month_clause}
                 GROUP BY TO_CHAR(gbh.actual_cmplt_date, 'YYYY-MM')
                 ORDER BY period
-            """, {"date_from": d_from, "date_to": d_to})
+            """, extract_params)
             rows = cur_ora.fetchall()
-            if rows:
-                logger.info(f"[etl_production] OPM source: {len(rows)} rows")
+            logger.info(f"[etl_production] OPM returned {len(rows)} period rows")
         except Exception as e_opm:
-            logger.warning(f"[etl_production] OPM query failed ({e_opm}), trying WIP...")
+            logger.warning(f"[etl_production] OPM query failed: {e_opm!r} — trying WIP fallback")
 
         # ── Strategy 2: WIP Discrete fallback ────────────────────
         if not rows:
             try:
-                cur_ora.execute("""
+                logger.info(f"[etl_production] Trying WIP wip_discrete_jobs year={year} month={month}")
+                cur_ora.execute(f"""
                     SELECT
                         TO_CHAR(COALESCE(wdj.date_completed, wdj.last_update_date), 'YYYY-MM') AS period,
-                        SUM(wdj.start_quantity)      AS planned_qty,
-                        SUM(wdj.quantity_completed)  AS actual_qty
+                        SUM(NVL(wdj.start_quantity, 0))      AS planned_qty,
+                        SUM(NVL(wdj.quantity_completed, 0))  AS actual_qty
                     FROM wip_discrete_jobs wdj
                     WHERE wdj.status_type IN (3, 4, 12)
-                      AND COALESCE(wdj.date_completed, wdj.last_update_date) >= :date_from
-                      AND COALESCE(wdj.date_completed, wdj.last_update_date) <  :date_to
+                      AND EXTRACT(YEAR FROM COALESCE(wdj.date_completed, wdj.last_update_date)) = :year
+                      {wip_month_clause}
                     GROUP BY TO_CHAR(COALESCE(wdj.date_completed, wdj.last_update_date), 'YYYY-MM')
                     ORDER BY period
-                """, {"date_from": d_from, "date_to": d_to})
+                """, extract_params)
                 rows = cur_ora.fetchall()
-                logger.info(f"[etl_production] WIP source: {len(rows)} rows")
+                logger.info(f"[etl_production] WIP returned {len(rows)} period rows")
             except Exception as e_wip:
-                logger.error(f"[etl_production] WIP query also failed: {e_wip}")
+                logger.error(f"[etl_production] WIP query also failed: {e_wip!r}")
                 raise
 
         records = len(rows)
