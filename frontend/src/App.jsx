@@ -9,6 +9,7 @@ import ExpansionPage from './pages/ExpansionPage';
 import AdministrationPage from './pages/AdministrationPage';
 import BusinessPlanPage from './pages/BusinessPlanPage';
 import EtlPage from './pages/EtlPage';
+import DailySalesPage from './pages/DailySalesPage';
 
 function AuthGate({ children }) {
   const { init, authenticated, loading } = useAuthStore();
@@ -57,6 +58,7 @@ export default function App() {
           <main className="flex-1 ml-[260px] p-6 transition-all duration-300">
             <Routes>
               <Route path="/" element={<SummaryPage />} />
+              <Route path="/daily-sales" element={<DailySalesPage />} />
               <Route path="/performance" element={<PerformancePage />} />
               <Route path="/production" element={<ProductionPage />} />
               <Route path="/expansion" element={<ExpansionPage />} />

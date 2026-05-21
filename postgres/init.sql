@@ -295,7 +295,7 @@ CREATE TABLE eis.business_plan (
 CREATE TABLE eis.etl_job_log (
     id SERIAL PRIMARY KEY,
     job_name VARCHAR(100) NOT NULL,
-    status VARCHAR(20) NOT NULL CHECK (status IN ('running', 'success', 'failed')),
+    status VARCHAR(20) NOT NULL CHECK (status IN ('running', 'success', 'failed', 'stopped')),
     started_at TIMESTAMPTZ DEFAULT NOW(),
     finished_at TIMESTAMPTZ,
     records_processed INT DEFAULT 0,

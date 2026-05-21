@@ -71,7 +71,13 @@ export const eisApi = {
   // ETL
   getEtlStatus: () => api.get(`${EIS_PREFIX}/etl/status`),
   triggerEtl: (jobName, params) => api.post(`${EIS_PREFIX}/etl/trigger/${jobName}`, params),
+  stopEtl: (jobName) => api.post(`${EIS_PREFIX}/etl/stop/${jobName}`),
   getEtlSchedule: () => api.get(`${EIS_PREFIX}/etl/schedule`),
+  getEtlJobData: (jobName, year, month) => api.get(`${EIS_PREFIX}/etl/job-data/${jobName}`, { params: { year, month: month || undefined } }),
+
+  // Daily Sales
+  getDailySales: () => api.get(`${EIS_PREFIX}/daily-sales/data`),
+  uploadDailySales: (formData) => api.post(`${EIS_PREFIX}/daily-sales/upload`, formData),
 };
 
 export default api;

@@ -91,9 +91,10 @@ async def sales_growth(
 @router.get("/ebit-product")
 async def ebit_by_product(
     year: int = Query(2025), period: int = Query(11),
+    limit: int = Query(5),
     db: AsyncSession = Depends(get_db), user: dict = Depends(get_current_user),
 ):
-    """EBIT percentage per product."""
+    """Top N products by sales with their EBIT %."""
     q = text("""
         SELECT p.product_name, p.business_type, p.market,
                SUM(c.sales_amount) as sales,
@@ -107,9 +108,10 @@ async def ebit_by_product(
         WHERE per.fiscal_year = :year AND per.period_num <= :period
         GROUP BY p.product_name, p.business_type, p.market
         HAVING SUM(c.sales_amount) > 0
-        ORDER BY ebit_pct DESC
+        ORDER BY sales DESC
+        LIMIT :limit
     """)
-    result = await db.execute(q, {"year": year, "period": period})
+    result = await db.execute(q, {"year": year, "period": period, "limit": limit})
     return {"data": [dict(r) for r in result.mappings().all()]}
 
 

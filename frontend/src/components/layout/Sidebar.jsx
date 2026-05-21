@@ -2,13 +2,14 @@ import { NavLink } from 'react-router-dom';
 import logoOnly from '../../assets/LOGO-ONLY.png';
 import {
   LayoutDashboard, TrendingUp, Factory, Rocket, Building2,
-  FileSpreadsheet, Settings, LogOut, ChevronLeft, ChevronRight,
+  FileSpreadsheet, Settings, LogOut, ChevronLeft, ChevronRight, BarChart2,
 } from 'lucide-react';
 import { useState } from 'react';
 import useAuthStore from '../../stores/authStore';
 
 const NAV_ITEMS = [
   { path: '/', label: 'Summary', icon: LayoutDashboard },
+  { path: '/daily-sales', label: 'Daily Sales', icon: BarChart2 },
   { path: '/performance', label: 'Performance', icon: TrendingUp },
   { path: '/production', label: 'Production', icon: Factory },
   { path: '/expansion', label: 'Business Expansion', icon: Rocket },

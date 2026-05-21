@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from app.config import get_settings
-from app.routers import summary, performance, production, expansion, administration, business_plan, etl_admin
+from app.routers import summary, performance, production, expansion, administration, business_plan, etl_admin, daily_sales
 
 settings = get_settings()
 
@@ -40,6 +40,7 @@ app.include_router(expansion.router, prefix=f"{API_PREFIX}/expansion", tags=["Bu
 app.include_router(administration.router, prefix=f"{API_PREFIX}/admin", tags=["Administration"])
 app.include_router(business_plan.router, prefix=f"{API_PREFIX}/bp", tags=["Business Plan"])
 app.include_router(etl_admin.router, prefix=f"{API_PREFIX}/etl", tags=["ETL Admin"])
+app.include_router(daily_sales.router, prefix=f"{API_PREFIX}/daily-sales", tags=["Daily Sales"])
 
 
 @app.get("/health")

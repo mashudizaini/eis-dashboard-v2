@@ -70,21 +70,18 @@ def _get_period_id(cur_pg, year, month):
     return row[0] if row else None
 
 
-def _normalize_biz_type(raw):
-    """Map Oracle segment value to known business_type."""
-    if not raw:
-        return 'Local'
-    val = str(raw).strip().upper()
-    if 'CMO' in val:
-        return 'CMO'
-    if 'EXPORT' in val or 'EXP' in val:
-        return 'Export'
-    return 'Local'
-
-
 @celery_app.task(name="app.tasks.etl_tasks.etl_sales")
 def etl_sales(year: int = None, month: int = None):
-    """Extract sales data from Oracle GL_BALANCES and load into fact_sales."""
+    """Extract sales actuals from Oracle OE (Order Management) → fact_sales.
+
+    Segment classification (from OE transaction types):
+      LOCAL  : TRX_TYPE = 'SO-LOCAL'  (LINE_TYPE ≠ 'SO-TOLL IN-LOCAL')
+      CMO    : TRX_TYPE = 'SO-LOCAL'   LINE_TYPE = 'SO-TOLL IN-LOCAL'
+      EXPORT : TRX_TYPE = 'SO-EXPORT'
+
+    BP amounts sourced from eis.business_plan (plan_type = 'Sales').
+    Amounts in IDR (no conversion needed).
+    """
     year = year or datetime.now().year
     pg = _get_pg()
     job_id = _log_start(pg, "etl_sales", year, month)
@@ -93,64 +90,154 @@ def etl_sales(year: int = None, month: int = None):
         ora = get_oracle_connection()
         cur_ora = ora.cursor()
 
-        period_clause, period_params = _month_filter_gl(year, month)
+        # ── Step 1: lookup transaction_type_ids (tiny table, fast) ──
+        # Avoids joining oe_transaction_types_tl inside the main query,
+        # which forces Oracle to evaluate USERENV('LANG') per row and
+        # often causes full table scans on the large OE header/line tables.
+        cur_ora.execute(
+            "SELECT transaction_type_id, name "
+            "FROM oe_transaction_types_tl "
+            "WHERE name IN ('SO-LOCAL', 'SO-EXPORT', 'SO-TOLL IN-LOCAL') "
+            "AND language = 'US'"
+        )
+        type_map = {name: tid for tid, name in cur_ora.fetchall()}
+
+        local_id  = type_map.get('SO-LOCAL')
+        export_id = type_map.get('SO-EXPORT')
+        cmo_ln_id = type_map.get('SO-TOLL IN-LOCAL')
+
+        if not local_id or not export_id:
+            raise ValueError(
+                f"TRX_TYPE IDs not found — SO-LOCAL={local_id}, SO-EXPORT={export_id}. "
+                "Check oe_transaction_types_tl language='US'."
+            )
+
+        # ── Step 2: build date-range filter (allows Oracle to use index) ──
+        from datetime import date as _date
+        if month:
+            d_from = _date(year, month, 1)
+            d_to   = _date(year + 1, 1, 1) if month == 12 else _date(year, month + 1, 1)
+        else:
+            d_from = _date(year, 1, 1)
+            d_to   = _date(year + 1, 1, 1)
+
+        # CMO condition: SO-LOCAL header + SO-TOLL IN-LOCAL line type
+        if cmo_ln_id:
+            cmo_when = f"WHEN ooh.order_type_id = {local_id} AND ool.line_type_id = {cmo_ln_id} THEN 'CMO'"
+        else:
+            cmo_when = ""   # no CMO type found → all SO-LOCAL treated as Local
+
+        case_expr = f"""
+            CASE
+                WHEN ooh.order_type_id = {export_id} THEN 'Export'
+                {cmo_when}
+                ELSE 'Local'
+            END"""
+
+        # ── Step 3: main query — no TL joins, uses index on ordered_date ──
         cur_ora.execute(f"""
             SELECT
-                gb.period_name,
-                gcc.segment2 as product_segment,
-                gcc.segment4 as business_segment,
-                SUM(NVL(gb.period_net_dr, 0) - NVL(gb.period_net_cr, 0)) as net_amount,
-                gb.actual_flag
-            FROM gl_balances gb
-            JOIN gl_code_combinations gcc ON gb.code_combination_id = gcc.code_combination_id
-            WHERE gb.actual_flag IN ('A', 'B')
-              AND gcc.segment3 BETWEEN '40000' AND '49999'
-              AND gb.currency_code = 'IDR'
-              {period_clause}
-            GROUP BY gb.period_name, gcc.segment2, gcc.segment4, gb.actual_flag
-        """, period_params)
+                TO_CHAR(ooh.ordered_date, 'YYYY-MM') AS period,
+                {case_expr}                           AS business_type,
+                SUM(
+                    NVL(ool.shipped_quantity, ool.ordered_quantity)
+                    * NVL(ool.unit_selling_price, 0)
+                ) AS actual_amount
+            FROM oe_order_headers_all ooh
+            JOIN oe_order_lines_all   ool ON ooh.header_id = ool.header_id
+            WHERE ooh.order_type_id IN ({local_id}, {export_id})
+              AND ooh.ordered_date >= :date_from
+              AND ooh.ordered_date <  :date_to
+              AND ool.flow_status_code <> 'CANCELLED'
+            GROUP BY
+                TO_CHAR(ooh.ordered_date, 'YYYY-MM'),
+                {case_expr}
+            ORDER BY period
+        """, {"date_from": d_from, "date_to": d_to})
 
         rows = cur_ora.fetchall()
         records = len(rows)
-        logger.info(f"[etl_sales] Extracted {records} rows from Oracle GL (year={year}, month={month})")
+        logger.info(f"[etl_sales] Extracted {records} rows from Oracle OE (year={year}, month={month})")
         ora.close()
 
         # ── LOAD ──────────────────────────────────────────────────
-        # Aggregate per (period, business_type, actual_flag)
-        # key = (ora_year, ora_month, biz_type) → {A: total, B: total}
-        agg = defaultdict(lambda: {'A': 0.0, 'B': 0.0})
-
-        for period_name_ora, product_segment, business_segment, net_amount, actual_flag in rows:
-            parsed = _parse_gl_period(period_name_ora)
-            if not parsed:
-                logger.warning(f"[etl_sales] Cannot parse period: {period_name_ora}")
-                continue
-            ora_year, ora_month = parsed
-            biz_type = _normalize_biz_type(business_segment)
-            # Revenue accounts are credits in GL → negate for positive sales figures
-            amount = abs(float(net_amount or 0))
-            key = (ora_year, ora_month, biz_type)
-            if actual_flag in ('A', 'B'):
-                agg[key][actual_flag] += amount
-
         cur_pg = pg.cursor()
+
+        # One-time check: does business_plan have a business_type column?
+        cur_pg.execute("""
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = 'eis' AND table_name = 'business_plan'
+              AND column_name = 'business_type'
+        """)
+        _has_biz_type_col = cur_pg.fetchone() is not None
+
+        MONTH_COLS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                      'jul', 'aug', 'sep', 'oct', 'nov', '"dec"']
+
+        def _get_bp(fiscal_year: int, ora_month: int, biz_type: str) -> float:
+            """Lookup BP sales amount. Uses SAVEPOINTs so a failed query does NOT
+            abort the outer PostgreSQL transaction."""
+            col = MONTH_COLS[ora_month - 1]
+
+            # Try per-segment BP if the column exists
+            if _has_biz_type_col:
+                try:
+                    cur_pg.execute("SAVEPOINT bp_seg")
+                    cur_pg.execute(
+                        f"SELECT {col} FROM eis.business_plan "
+                        f"WHERE fiscal_year=%s AND plan_type='Sales' AND business_type=%s LIMIT 1",
+                        (fiscal_year, biz_type),
+                    )
+                    row = cur_pg.fetchone()
+                    cur_pg.execute("RELEASE SAVEPOINT bp_seg")
+                    if row and row[0] is not None:
+                        return float(row[0])
+                except Exception:
+                    cur_pg.execute("ROLLBACK TO SAVEPOINT bp_seg")
+
+            # Fallback: total Sales BP divided equally across 3 segments
+            try:
+                cur_pg.execute("SAVEPOINT bp_total")
+                cur_pg.execute(
+                    f"SELECT {col} FROM eis.business_plan "
+                    f"WHERE fiscal_year=%s AND plan_type='Sales' LIMIT 1",
+                    (fiscal_year,),
+                )
+                row = cur_pg.fetchone()
+                cur_pg.execute("RELEASE SAVEPOINT bp_total")
+                if row and row[0] is not None:
+                    return round(float(row[0]) / 3, 2)
+            except Exception:
+                cur_pg.execute("ROLLBACK TO SAVEPOINT bp_total")
+
+            return 0.0
+
         loaded = 0
-        for (ora_year, ora_month, biz_type), amounts in agg.items():
+        for period_str, biz_type, actual_amount in rows:
+            try:
+                ora_year, ora_month = int(period_str[:4]), int(period_str[5:7])
+            except (ValueError, IndexError):
+                logger.warning(f"[etl_sales] Cannot parse period: {period_str}")
+                continue
+
             period_id = _get_period_id(cur_pg, ora_year, ora_month)
             if not period_id:
-                logger.warning(f"[etl_sales] No dim_period for {ora_year}/{ora_month}")
+                logger.warning(f"[etl_sales] No dim_period for {period_str}")
                 continue
 
-            # DELETE existing aggregated row (product_id IS NULL) then INSERT
+            bp_amount = _get_bp(ora_year, ora_month, biz_type)
+            act = float(actual_amount or 0)
+
             cur_pg.execute(
-                "DELETE FROM eis.fact_sales WHERE period_id=%s AND business_type=%s AND market='All' AND product_id IS NULL",
+                "DELETE FROM eis.fact_sales "
+                "WHERE period_id=%s AND business_type=%s AND market='All' AND product_id IS NULL",
                 (period_id, biz_type),
             )
             cur_pg.execute(
                 """INSERT INTO eis.fact_sales
                        (period_id, product_id, business_type, market, bp_amount, actual_amount)
                    VALUES (%s, NULL, %s, 'All', %s, %s)""",
-                (period_id, biz_type, amounts['B'], amounts['A']),
+                (period_id, biz_type, bp_amount, act),
             )
             loaded += 1
 
@@ -163,6 +250,160 @@ def etl_sales(year: int = None, month: int = None):
 
     except Exception as e:
         logger.error(f"[etl_sales] Failed: {e}")
+        _log_end(pg, job_id, "failed", records, str(e))
+        raise
+    finally:
+        pg.close()
+
+    return {"status": "success", "records": records}
+
+
+@celery_app.task(name="app.tasks.etl_tasks.etl_cogs")
+def etl_cogs(year: int = None, month: int = None):
+    """Extract product-level sales & COGS from Oracle OE → dim_product + fact_cogs.
+
+    Uses the same OE transaction type classification as etl_sales:
+      LOCAL  : TRX_TYPE = SO-LOCAL (LINE_TYPE ≠ SO-TOLL IN-LOCAL)
+      CMO    : TRX_TYPE = SO-LOCAL + LINE_TYPE = SO-TOLL IN-LOCAL
+      EXPORT : TRX_TYPE = SO-EXPORT
+
+    product_code = inventory_item_id (string)
+    product_name = ordered_item (item number / description as entered in OE)
+    EBIT         = sales_amount − cogs_amount  (unit_cost from OE line)
+    """
+    year = year or datetime.now().year
+    pg = _get_pg()
+    job_id = _log_start(pg, "etl_cogs", year, month)
+    records = 0
+    try:
+        ora = get_oracle_connection()
+        cur_ora = ora.cursor()
+
+        # ── Step 1: lookup type IDs (same as etl_sales) ──────────
+        cur_ora.execute(
+            "SELECT transaction_type_id, name "
+            "FROM oe_transaction_types_tl "
+            "WHERE name IN ('SO-LOCAL', 'SO-EXPORT', 'SO-TOLL IN-LOCAL') "
+            "AND language = 'US'"
+        )
+        type_map = {name: tid for tid, name in cur_ora.fetchall()}
+
+        local_id  = type_map.get('SO-LOCAL')
+        export_id = type_map.get('SO-EXPORT')
+        cmo_ln_id = type_map.get('SO-TOLL IN-LOCAL')
+
+        if not local_id or not export_id:
+            raise ValueError(
+                f"TRX_TYPE IDs not found — SO-LOCAL={local_id}, SO-EXPORT={export_id}"
+            )
+
+        # ── Step 2: date range ────────────────────────────────────
+        from datetime import date as _date
+        if month:
+            d_from = _date(year, month, 1)
+            d_to   = _date(year + 1, 1, 1) if month == 12 else _date(year, month + 1, 1)
+        else:
+            d_from = _date(year, 1, 1)
+            d_to   = _date(year + 1, 1, 1)
+
+        cmo_when = (
+            f"WHEN ooh.order_type_id = {local_id} AND ool.line_type_id = {cmo_ln_id} THEN 'CMO'"
+            if cmo_ln_id else ""
+        )
+        case_biz = f"""
+            CASE
+                WHEN ooh.order_type_id = {export_id} THEN 'Export'
+                {cmo_when}
+                ELSE 'Local'
+            END"""
+
+        # ── Step 3: product-level query (no TL join in main query) ─
+        cur_ora.execute(f"""
+            SELECT
+                TO_CHAR(ooh.ordered_date, 'YYYY-MM')                           AS period,
+                TO_CHAR(ool.inventory_item_id)                                  AS product_code,
+                TRIM(NVL(MAX(ool.ordered_item),
+                         TO_CHAR(ool.inventory_item_id)))                       AS product_name,
+                {case_biz}                                                       AS business_type,
+                SUM(NVL(ool.shipped_quantity, ool.ordered_quantity)
+                    * NVL(ool.unit_selling_price, 0))                           AS sales_amount,
+                SUM(NVL(ool.shipped_quantity, ool.ordered_quantity)
+                    * NVL(ool.unit_cost, 0))                                    AS cogs_amount
+            FROM oe_order_headers_all ooh
+            JOIN oe_order_lines_all   ool ON ooh.header_id = ool.header_id
+            WHERE ooh.order_type_id IN ({local_id}, {export_id})
+              AND ooh.ordered_date >= :date_from
+              AND ooh.ordered_date <  :date_to
+              AND ool.flow_status_code <> 'CANCELLED'
+              AND ool.inventory_item_id IS NOT NULL
+            GROUP BY
+                TO_CHAR(ooh.ordered_date, 'YYYY-MM'),
+                TO_CHAR(ool.inventory_item_id),
+                {case_biz}
+            ORDER BY sales_amount DESC
+        """, {"date_from": d_from, "date_to": d_to})
+
+        rows = cur_ora.fetchall()
+        records = len(rows)
+        logger.info(f"[etl_cogs] Extracted {records} product rows from Oracle OE")
+        ora.close()
+
+        # ── Step 4: LOAD ──────────────────────────────────────────
+        cur_pg = pg.cursor()
+        loaded = 0
+
+        for period_str, product_code, product_name, biz_type, sales_amt, cogs_amt in rows:
+            try:
+                ora_year, ora_month = int(period_str[:4]), int(period_str[5:7])
+            except (ValueError, IndexError):
+                continue
+
+            period_id = _get_period_id(cur_pg, ora_year, ora_month)
+            if not period_id:
+                logger.warning(f"[etl_cogs] No dim_period for {period_str}")
+                continue
+
+            sales = float(sales_amt or 0)
+            cogs  = float(cogs_amt  or 0)
+            ebit  = sales - cogs
+
+            # Upsert dim_product (product_code is UNIQUE)
+            cur_pg.execute(
+                """INSERT INTO eis.dim_product
+                       (product_code, product_name, business_type, market)
+                   VALUES (%s, %s, %s, 'All')
+                   ON CONFLICT (product_code) DO UPDATE SET
+                       product_name  = EXCLUDED.product_name,
+                       business_type = EXCLUDED.business_type""",
+                (product_code[:20], (product_name or product_code)[:150], biz_type),
+            )
+            cur_pg.execute(
+                "SELECT id FROM eis.dim_product WHERE product_code = %s",
+                (product_code[:20],),
+            )
+            product_id = cur_pg.fetchone()[0]
+
+            # Upsert fact_cogs (UNIQUE period_id, product_id)
+            cur_pg.execute(
+                """INSERT INTO eis.fact_cogs
+                       (period_id, product_id, sales_amount, cogs_total, ebit_amount)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (period_id, product_id) DO UPDATE SET
+                       sales_amount = EXCLUDED.sales_amount,
+                       cogs_total   = EXCLUDED.cogs_total,
+                       ebit_amount  = EXCLUDED.ebit_amount""",
+                (period_id, product_id, sales, cogs, ebit),
+            )
+            loaded += 1
+
+        pg.commit()
+        logger.info(f"[etl_cogs] Loaded {loaded} rows into fact_cogs")
+
+        _log_end(pg, job_id, "success", records)
+        logger.info(f"[etl_cogs] Completed: {records} extracted, {loaded} loaded")
+
+    except Exception as e:
+        logger.error(f"[etl_cogs] Failed: {e}")
         _log_end(pg, job_id, "failed", records, str(e))
         raise
     finally:

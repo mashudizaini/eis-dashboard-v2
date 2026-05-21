@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, Cell,
+  Tooltip, Legend, ResponsiveContainer, Cell, LabelList,
 } from 'recharts';
 import TopBar from '../components/layout/TopBar';
 import Loading from '../components/common/Loading';
@@ -28,7 +28,7 @@ export default function PerformancePage() {
       ]);
       setMonthly(mRes.data.data || []);
       setAchievement(aRes.data.data || []);
-      setEbit((eRes.data.data || []).slice(0, 15));
+      setEbit((eRes.data.data || []).slice(0, 5));
       setArea(arRes.data.data || []);
     } catch (err) {
       console.error('Failed to load performance:', err);
@@ -113,20 +113,56 @@ export default function PerformancePage() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* EBIT by Product */}
         <div className="chart-container">
-          <h3 className="font-display font-semibold text-gray-800 mb-4">EBIT by product (top 15)</h3>
-          <ResponsiveContainer width="100%" height={400}>
-            <BarChart data={ebit} layout="vertical" margin={{ left: 120 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis type="number" tick={{ fontSize: 11 }} unit="%" />
-              <YAxis type="category" dataKey="product_name" tick={{ fontSize: 11 }} width={115} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }} />
-              <Bar dataKey="ebit_pct" name="EBIT %" radius={[0, 4, 4, 0]}>
-                {ebit.map((entry, i) => (
-                  <Cell key={i} fill={Number(entry.ebit_pct) >= 0 ? '#10b981' : '#ef4444'} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          <h3 className="font-display font-semibold text-gray-800 mb-1">EBIT — Product</h3>
+          <p className="text-xs text-gray-400 mb-4">Top 5 produk berdasarkan nilai penjualan tertinggi</p>
+          {ebit.length === 0 ? (
+            <div className="text-center text-gray-400 py-10 text-sm">No data available</div>
+          ) : (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={ebit}
+                layout="vertical"
+                margin={{ left: 130, right: 60, top: 4, bottom: 4 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                <XAxis
+                  type="number"
+                  tick={{ fontSize: 11 }}
+                  tickFormatter={(v) => `${v}%`}
+                  domain={[0, 'dataMax + 5']}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <YAxis
+                  type="category"
+                  dataKey="product_name"
+                  tick={{ fontSize: 11, fill: '#374151' }}
+                  width={125}
+                  axisLine={false}
+                  tickLine={false}
+                />
+                <Tooltip
+                  formatter={(v, name, props) => [
+                    `${Number(v).toFixed(1)}%`,
+                    'EBIT %',
+                  ]}
+                  labelFormatter={(label) => label}
+                  contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+                />
+                <Bar dataKey="ebit_pct" name="EBIT %" radius={[0, 4, 4, 0]} barSize={28}>
+                  {ebit.map((entry, i) => (
+                    <Cell key={i} fill="#1a5a73" />
+                  ))}
+                  <LabelList
+                    dataKey="ebit_pct"
+                    position="right"
+                    formatter={(v) => `${Number(v).toFixed(0)}%`}
+                    style={{ fontSize: 11, fontWeight: 600, fill: '#374151' }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* Area Sales */}
