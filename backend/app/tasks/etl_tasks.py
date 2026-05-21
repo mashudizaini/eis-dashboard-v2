@@ -647,7 +647,14 @@ def etl_inventory(year: int = None, month: int = None):
 
 @celery_app.task(name="app.tasks.etl_tasks.etl_production")
 def etl_production(year: int = None, month: int = None):
-    """Extract production data from Oracle WIP and load into fact_production."""
+    """Extract production data from Oracle → fact_production.
+
+    Tries Oracle Process Manufacturing (OPM) first via gme_batch_header.
+    Falls back to WIP Discrete (wip_discrete_jobs) if OPM returns no rows.
+
+    OPM  batch_status : 3=Completed, 4=Closed
+    WIP  status_type  : 3=Complete, 4=Complete-No Charges, 12=Closed
+    """
     year = year or datetime.now().year
     pg = _get_pg()
     job_id = _log_start(pg, "etl_production", year, month)
@@ -656,36 +663,79 @@ def etl_production(year: int = None, month: int = None):
         ora = get_oracle_connection()
         cur_ora = ora.cursor()
 
+        from datetime import date as _date
         if month:
-            date_filter = "AND EXTRACT(YEAR FROM wdj.date_completed) = :year AND EXTRACT(MONTH FROM wdj.date_completed) = :month"
-            date_params = {"year": year, "month": month}
+            d_from = _date(year, month, 1)
+            d_to   = _date(year + 1, 1, 1) if month == 12 else _date(year, month + 1, 1)
         else:
-            date_filter = "AND EXTRACT(YEAR FROM wdj.date_completed) = :year"
-            date_params = {"year": year}
+            d_from = _date(year, 1, 1)
+            d_to   = _date(year + 1, 1, 1)
 
-        cur_ora.execute(f"""
-            SELECT
-                TO_CHAR(wdj.date_completed, 'YYYY-MM') as period,
-                SUM(wdj.quantity_completed) as actual_qty,
-                SUM(wdj.start_quantity) as planned_qty
-            FROM wip_discrete_jobs wdj
-            WHERE wdj.status_type IN (4, 12)
-              {date_filter}
-            GROUP BY TO_CHAR(wdj.date_completed, 'YYYY-MM')
-            ORDER BY period
-        """, date_params)
-        rows = cur_ora.fetchall()
+        rows = []
+
+        # ── Strategy 1: Oracle Process Manufacturing (OPM) ───────
+        try:
+            cur_ora.execute("""
+                SELECT
+                    TO_CHAR(gbh.actual_cmplt_date, 'YYYY-MM')  AS period,
+                    SUM(gbh.plan_qty)                           AS planned_qty,
+                    SUM(gbh.actual_qty)                         AS actual_qty
+                FROM gme_batch_header gbh
+                WHERE gbh.batch_status IN (3, 4)
+                  AND gbh.actual_cmplt_date >= :date_from
+                  AND gbh.actual_cmplt_date <  :date_to
+                  AND gbh.actual_cmplt_date IS NOT NULL
+                GROUP BY TO_CHAR(gbh.actual_cmplt_date, 'YYYY-MM')
+                ORDER BY period
+            """, {"date_from": d_from, "date_to": d_to})
+            rows = cur_ora.fetchall()
+            if rows:
+                logger.info(f"[etl_production] OPM source: {len(rows)} rows")
+        except Exception as e_opm:
+            logger.warning(f"[etl_production] OPM query failed ({e_opm}), trying WIP...")
+
+        # ── Strategy 2: WIP Discrete fallback ────────────────────
+        if not rows:
+            try:
+                cur_ora.execute("""
+                    SELECT
+                        TO_CHAR(COALESCE(wdj.date_completed, wdj.last_update_date), 'YYYY-MM') AS period,
+                        SUM(wdj.start_quantity)      AS planned_qty,
+                        SUM(wdj.quantity_completed)  AS actual_qty
+                    FROM wip_discrete_jobs wdj
+                    WHERE wdj.status_type IN (3, 4, 12)
+                      AND COALESCE(wdj.date_completed, wdj.last_update_date) >= :date_from
+                      AND COALESCE(wdj.date_completed, wdj.last_update_date) <  :date_to
+                    GROUP BY TO_CHAR(COALESCE(wdj.date_completed, wdj.last_update_date), 'YYYY-MM')
+                    ORDER BY period
+                """, {"date_from": d_from, "date_to": d_to})
+                rows = cur_ora.fetchall()
+                logger.info(f"[etl_production] WIP source: {len(rows)} rows")
+            except Exception as e_wip:
+                logger.error(f"[etl_production] WIP query also failed: {e_wip}")
+                raise
+
         records = len(rows)
         ora.close()
+
+        if records == 0:
+            logger.warning(
+                f"[etl_production] No production data found for {year}"
+                + (f"/{month}" if month else "") +
+                ". Check Oracle OPM (gme_batch_header) and WIP (wip_discrete_jobs) tables."
+            )
 
         # ── LOAD ──────────────────────────────────────────────────
         cur_pg = pg.cursor()
         loaded = 0
 
-        for period_str, actual_qty, planned_qty in rows:
+        for period_str, planned_qty, actual_qty in rows:
+            if not period_str:
+                continue
             try:
                 ora_year, ora_month = int(period_str[:4]), int(period_str[5:7])
             except (ValueError, IndexError):
+                logger.warning(f"[etl_production] Cannot parse period: {period_str}")
                 continue
 
             period_id = _get_period_id(cur_pg, ora_year, ora_month)
@@ -693,10 +743,9 @@ def etl_production(year: int = None, month: int = None):
                 logger.warning(f"[etl_production] No dim_period for {period_str}")
                 continue
 
-            act = float(actual_qty or 0)
             plan = float(planned_qty or 0)
+            act  = float(actual_qty  or 0)
 
-            # Insert as 'Local' segment (primary segment); extend later with org mapping
             cur_pg.execute(
                 """INSERT INTO eis.fact_production
                        (period_id, segment, bp_qty, actual_qty, batch_size, yield_qty)
@@ -712,7 +761,6 @@ def etl_production(year: int = None, month: int = None):
 
         pg.commit()
         logger.info(f"[etl_production] Loaded {loaded} rows into fact_production")
-        # ──────────────────────────────────────────────────────────
 
         _log_end(pg, job_id, "success", records)
 
