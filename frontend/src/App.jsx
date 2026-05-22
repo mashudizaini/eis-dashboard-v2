@@ -10,6 +10,7 @@ import AdministrationPage from './pages/AdministrationPage';
 import BusinessPlanPage from './pages/BusinessPlanPage';
 import EtlPage from './pages/EtlPage';
 import DailySalesPage from './pages/DailySalesPage';
+import DataUploadPage from './pages/DataUploadPage';
 
 function AuthGate({ children }) {
   const { init, authenticated, loading } = useAuthStore();
@@ -65,6 +66,7 @@ export default function App() {
               <Route path="/administration" element={<AdministrationPage />} />
               <Route path="/business-plan" element={<BusinessPlanPage />} />
               <Route path="/etl" element={<EtlPage />} />
+              <Route path="/data-upload" element={<DataUploadPage />} />
             </Routes>
           </main>
         </div>

@@ -787,74 +787,82 @@ def etl_production(year: int = None, month: int = None):
 
 @celery_app.task(name="app.tasks.etl_tasks.etl_employee")
 def etl_employee(year: int = None, month: int = None):
-    """Extract employee headcount from Oracle HR and load into fact_employee."""
+    """Extract monthly employee headcount from Oracle HR → fact_employee.
+
+    Uses end-of-month date as snapshot to capture all active employees.
+    Date format YYYY-MM-DD is NLS-independent.
+    When month is None, iterates all 12 months of the year.
+    """
+    import calendar as _cal
     year = year or datetime.now().year
     pg = _get_pg()
     job_id = _log_start(pg, "etl_employee", year, month)
     records = 0
+
+    def _map_dept(dept_name: str) -> str:
+        n = str(dept_name).upper()
+        if any(k in n for k in ('SALES', 'MARKETING', 'MARKET')):
+            return 'SM'
+        if any(k in n for k in ('SUPPLY', 'DISTRIBUT', 'LOGISTIC', 'WAREHOUSE')):
+            return 'SD'
+        if any(k in n for k in ('PRODUCTION', 'QC', 'QUALITY CONTROL', 'MANUFACT')):
+            return 'Plant Direct'
+        if any(k in n for k in ('ENGINEERING', 'MAINTENANCE', 'FACILITY')):
+            return 'Plant Indirect'
+        if 'PLANT' in n:
+            return 'Plant'
+        return 'Admin'
+
     try:
         ora = get_oracle_connection()
         cur_ora = ora.cursor()
-
-        if month:
-            eff_date = f"01-{datetime(year, month, 1).strftime('%b').upper()}-{year}"
-            date_params = {"eff_date": eff_date}
-            date_clause = "TO_DATE(:eff_date, 'DD-MON-YYYY')"
-        else:
-            date_params = {"year": year}
-            date_clause = f"TO_DATE('01-JAN-' || :year, 'DD-MON-YYYY')"
-
-        cur_ora.execute(f"""
-            SELECT
-                haou.name as department,
-                COUNT(DISTINCT papf.person_id) as headcount
-            FROM per_all_people_f papf
-            JOIN per_all_assignments_f paaf ON papf.person_id = paaf.person_id
-            JOIN hr_all_organization_units haou ON paaf.organization_id = haou.organization_id
-            WHERE {date_clause} BETWEEN papf.effective_start_date AND papf.effective_end_date
-              AND {date_clause} BETWEEN paaf.effective_start_date AND paaf.effective_end_date
-              AND paaf.assignment_type = 'E'
-              AND paaf.primary_flag = 'Y'
-            GROUP BY haou.name
-        """, date_params)
-        rows = cur_ora.fetchall()
-        records = len(rows)
-        ora.close()
-
-        # ── LOAD ──────────────────────────────────────────────────
-        # Map Oracle HR department name → dept_group
-        def _map_dept(dept_name):
-            n = str(dept_name).upper()
-            if any(k in n for k in ('SALES', 'MARKETING', 'MARKET')):
-                return 'SM'
-            if any(k in n for k in ('SUPPLY', 'DISTRIBUT', 'LOGISTIC', 'WAREHOUSE')):
-                return 'SD'
-            if any(k in n for k in ('PLANT DIRECT', 'PRODUCTION', 'QC', 'QUALITY CONTROL', 'MANUFACT')):
-                return 'Plant Direct'
-            if any(k in n for k in ('PLANT INDIRECT', 'ENGINEERING', 'MAINTENANCE', 'FACILITY')):
-                return 'Plant Indirect'
-            if any(k in n for k in ('PLANT',)):
-                return 'Plant'
-            return 'Admin'
-
-        # Aggregate by dept_group
-        dept_totals = defaultdict(int)
-        for dept_name, headcount in rows:
-            grp = _map_dept(dept_name)
-            dept_totals[grp] += int(headcount or 0)
-
-        ora_month = month or 1  # default to January if full-year run
-        period_id = None
         cur_pg = pg.cursor()
 
-        if month:
-            period_id = _get_period_id(cur_pg, year, ora_month)
-        else:
-            # Full-year: use the most recent period that has data
-            period_id = _get_period_id(cur_pg, year, 12) or _get_period_id(cur_pg, year, 1)
-
+        months_to_process = [month] if month else list(range(1, 13))
         loaded = 0
-        if period_id:
+
+        for m in months_to_process:
+            # End-of-month snapshot: NLS-independent YYYY-MM-DD format
+            last_day = _cal.monthrange(year, m)[1]
+            snap_date = f"{year}-{m:02d}-{last_day:02d}"
+
+            cur_ora.execute("""
+                SELECT
+                    haou.name                       AS department,
+                    COUNT(DISTINCT papf.person_id)  AS headcount
+                FROM per_all_people_f     papf
+                JOIN per_all_assignments_f paaf
+                    ON papf.person_id = paaf.person_id
+                JOIN hr_all_organization_units haou
+                    ON paaf.organization_id = haou.organization_id
+                WHERE TO_DATE(:snap, 'YYYY-MM-DD')
+                          BETWEEN papf.effective_start_date AND papf.effective_end_date
+                  AND TO_DATE(:snap, 'YYYY-MM-DD')
+                          BETWEEN paaf.effective_start_date AND paaf.effective_end_date
+                  AND paaf.assignment_type = 'E'
+                  AND paaf.primary_flag    = 'Y'
+                GROUP BY haou.name
+                ORDER BY haou.name
+            """, {"snap": snap_date})
+
+            dept_rows = cur_ora.fetchall()
+            records += len(dept_rows)
+            logger.info(f"[etl_employee] {year}/{m:02d} snapshot {snap_date}: {len(dept_rows)} dept rows")
+
+            if not dept_rows:
+                logger.warning(f"[etl_employee] No HR data for {snap_date} — skipping period {m}")
+                continue
+
+            period_id = _get_period_id(cur_pg, year, m)
+            if not period_id:
+                logger.warning(f"[etl_employee] No dim_period for {year}/{m}")
+                continue
+
+            # Aggregate to dept_group
+            dept_totals: dict = defaultdict(int)
+            for dept_name, headcount in dept_rows:
+                dept_totals[_map_dept(dept_name)] += int(headcount or 0)
+
             for dept_group, headcount in dept_totals.items():
                 cur_pg.execute(
                     """INSERT INTO eis.fact_employee
@@ -865,11 +873,9 @@ def etl_employee(year: int = None, month: int = None):
                     (period_id, dept_group, headcount),
                 )
                 loaded += 1
-            pg.commit()
-            logger.info(f"[etl_employee] Loaded {loaded} rows into fact_employee")
-        else:
-            logger.warning(f"[etl_employee] No dim_period found for {year}/{ora_month}")
-        # ──────────────────────────────────────────────────────────
+
+        pg.commit()
+        logger.info(f"[etl_employee] Loaded {loaded} rows across {len(months_to_process)} months")
 
         _log_end(pg, job_id, "success", records)
 

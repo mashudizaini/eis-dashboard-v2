@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import {
   Play, RefreshCw, Clock, CheckCircle, XCircle,
   Loader2, X, Square, ChevronDown, ChevronUp, Database,
@@ -323,9 +323,8 @@ export default function EtlPage() {
                 </tr>
               ) : (
                 jobs.map((j) => (
-                  <>
+                  <Fragment key={j.id}>
                     <tr
-                      key={j.id}
                       onClick={() => toggleExpand(j.id)}
                       className={`border-b border-gray-100 cursor-pointer transition-colors ${
                         expandedId === j.id ? 'bg-pharma-50' : 'hover:bg-gray-50/60'
@@ -374,13 +373,12 @@ export default function EtlPage() {
 
                     {expandedId === j.id && (
                       <DataPreview
-                        key={`preview-${j.id}`}
                         jobName={j.job_name}
                         runParams={j.run_params}
                         onClose={() => setExpandedId(null)}
                       />
                     )}
-                  </>
+                  </Fragment>
                 ))
               )}
             </tbody>
