@@ -1,4 +1,5 @@
 import io
+import re
 import logging
 from fastapi import APIRouter, Depends, UploadFile, File, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -171,12 +172,40 @@ _MARKET_CODE = {
 }
 
 
+def _extract_base_name(product_name: str) -> str:
+    """Hapus suffix kekuatan/berat dari nama produk.
+
+    Contoh:
+      'Carboplatin 150 mg'      → 'Carboplatin'
+      'Paclitaxel 30 mg'        → 'Paclitaxel'
+      'Gemcitabine 200 mg - Liquid' → 'Gemcitabine'
+      'Darbepoetin alfa 20 mcg' → 'Darbepoetin alfa'
+    """
+    base = re.sub(
+        r'\s+[\d,\.]+\s*(mg|mcg|gr|g(?!em)|ml|mL|L|IU|iu|µg|μg)(/\w+)?\s*$',
+        '', product_name, flags=re.IGNORECASE
+    ).strip()
+    base = re.sub(r'\s*[-–]\s*Liquid\s*$', '', base, flags=re.IGNORECASE).strip()
+    return base if base else product_name
+
+
+def _make_product_code(base_name: str, market: str) -> str:
+    """Generate product_code <= 20 chars: {BASECODE}_{MKT}."""
+    mkt_code = _MARKET_CODE.get(market.lower(), "OTH")
+    clean    = re.sub(r'[^A-Za-z0-9]', '', base_name)[:12].upper()
+    return f"{clean}_{mkt_code}"
+
+
 def _parse_cogs_new_excel(content: bytes) -> list[dict]:
-    """Parse COGS Data New.xlsx format.
+    """Parse COGS Data New.xlsx dan gabungkan per (base_name, market).
+
+    Produk dengan kekuatan berbeda (mis. Paclitaxel 30 mg, 100 mg, 300 mg)
+    digabungkan menjadi satu entri 'Paclitaxel' per market.
+    Quantity dan COGS Amount dijumlahkan per bulan.
 
     Returns list of dicts:
-      {product_code, product_short, product_full, biz_type, market,
-       price_idr, qty[12], cogs_amt[12]}
+      {product_code, display_name, biz_type, market,
+       price_idr (weighted avg), qty[12], cogs_amt[12]}
     """
     try:
         import openpyxl
@@ -186,50 +215,49 @@ def _parse_cogs_new_excel(content: bytes) -> list[dict]:
     wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
     ws = wb.active
 
-    records = []
+    groups: dict = {}
+
     for row in ws.iter_rows(min_row=5, values_only=True):
         no = row[1] if len(row) > 1 else None
         if no is None or not isinstance(no, (int, float)):
             continue
 
-        market       = str(row[2] or "Public").strip()
+        market        = str(row[2] or "Public").strip()
         product_short = str(row[4] or "").strip()
-        # col 37 = full brand name (0-indexed), col 40 = explicit product code
-        product_full = str(row[37] if len(row) > 37 and row[37] else row[4] or "").strip()
-        # Use explicit product code if present (col 40), else generate
-        explicit_code = str(row[40]).strip() if len(row) > 40 and row[40] else None
-
-        # Price IDR 2025 = col 8 (0-indexed)
-        price_idr = float(row[8] or 0) if len(row) > 8 else 0.0
+        price_idr     = float(row[8] or 0) if len(row) > 8 else 0.0
 
         qty      = [float(row[9  + i] or 0) if len(row) > 9  + i else 0.0 for i in range(12)]
         cogs_amt = [float(row[22 + i] or 0) if len(row) > 22 + i else 0.0 for i in range(12)]
 
-        # Skip rows with no data at all
         if not any(qty) and not any(cogs_amt):
             continue
 
-        mkt_lower = market.lower()
-        biz_type  = _MARKET_BIZ_TYPE.get(mkt_lower, "Local")
-        mkt_code  = _MARKET_CODE.get(mkt_lower, "OTH")
+        base_name = _extract_base_name(product_short)
+        key       = (base_name, market)
 
-        if explicit_code:
-            product_code = explicit_code[:20]
-        else:
-            product_code = f"{mkt_code}{int(no):03d}"[:20]
+        if key not in groups:
+            groups[key] = {
+                "product_code": _make_product_code(base_name, market)[:20],
+                "display_name": base_name[:150],
+                "biz_type":     _MARKET_BIZ_TYPE.get(market.lower(), "Local"),
+                "market":       market,
+                "price_idr":    price_idr,
+                "qty":          [0.0] * 12,
+                "cogs_amt":     [0.0] * 12,
+                "_total_qty":   0.0,
+                "_total_sales": 0.0,
+            }
 
-        records.append({
-            "product_code":  product_code,
-            "product_short": product_short,
-            "product_full":  (product_full or product_short)[:150],
-            "biz_type":      biz_type,
-            "market":        market,
-            "price_idr":     price_idr,
-            "qty":           qty,       # list[float] len=12
-            "cogs_amt":      cogs_amt,  # list[float] len=12, unit = juta IDR
-        })
+        g = groups[key]
+        for i in range(12):
+            g["qty"][i]      += qty[i]
+            g["cogs_amt"][i] += cogs_amt[i]
 
-    if not records:
+        row_qty = sum(qty)
+        g["_total_qty"]   += row_qty
+        g["_total_sales"] += price_idr * row_qty
+
+    if not groups:
         raise HTTPException(
             status_code=422,
             detail=(
@@ -238,7 +266,16 @@ def _parse_cogs_new_excel(content: bytes) -> list[dict]:
                 "baris 5+ data produk dengan kolom No di kolom B."
             ),
         )
-    return records
+
+    # Finalize weighted-average price per group
+    result = []
+    for g in groups.values():
+        if g["_total_qty"] > 0:
+            g["price_idr"] = g["_total_sales"] / g["_total_qty"]
+        del g["_total_qty"], g["_total_sales"]
+        result.append(g)
+
+    return result
 
 
 @router.get("/cogs")

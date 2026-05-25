@@ -1,20 +1,23 @@
 """
 migrate_cogs.py — One-time migration script for COGS Data New.xlsx
 
-Reads COGS Data New.xlsx, clears old COGS data, inserts fresh dim_product
-and fact_cogs records for 2025 (Jan–Sep) into the EIS PostgreSQL database.
+Produk digabung berdasarkan nama dasar (tanpa kekuatan/berat):
+  Paclitaxel 30 mg + Paclitaxel 100 mg + Paclitaxel 300 mg
+  → satu entri "Paclitaxel" per market
+
+Quantity dan COGS Amount dijumlahkan per (base_name, market, bulan).
+Product_code = {BASECODE}_{MKT}  e.g. CARBOPLATIN_PUB, PACLITAXEL_CMO
 
 Run inside the backend Docker container:
     docker compose exec backend python migrate_cogs.py
-
-Or locally (update DB_URL to point to localhost:5433):
-    python migrate_cogs.py
 """
 
 import os
 import sys
+import re
 import psycopg2
 import openpyxl
+from collections import defaultdict
 
 # ── Connection ──────────────────────────────────────────────────────
 DB_URL = os.environ.get(
@@ -25,114 +28,146 @@ DB_URL = os.environ.get(
 EXCEL_PATH = os.path.join(os.path.dirname(__file__), "data_upload", "COGS Data New.xlsx")
 FISCAL_YEAR = 2025
 
-# ── Market → business_type mapping ──────────────────────────────────
+# ── Market mappings ──────────────────────────────────────────────────
 MARKET_BIZ_TYPE = {
-    "Public":            "Local",
-    "Private":           "Local",
-    "Service Agreement": "Local",
-    "Accounting":        "Local",
-    "CMO":               "CMO",
-    "Export":            "Export",
+    "public":            "Local",
+    "private":           "Local",
+    "service agreement": "Local",
+    "accounting":        "Local",
+    "cmo":               "CMO",
+    "export":            "Export",
 }
 
 MARKET_CODE = {
-    "Public":            "PUB",
-    "Private":           "PRI",
-    "CMO":               "CMO",
-    "Export":            "EXP",
-    "Service Agreement": "SVC",
-    "Accounting":        "ACC",
+    "public":            "PUB",
+    "private":           "PRI",
+    "cmo":               "CMO",
+    "export":            "EXP",
+    "service agreement": "SVC",
+    "accounting":        "ACC",
 }
 
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
           "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
-def parse_excel(path: str) -> list[dict]:
-    """Parse COGS Data New.xlsx.
+def extract_base_name(product_name: str) -> str:
+    """Remove strength/weight suffix, return base drug name.
 
-    Structure:
-      Row 1-2 : title / notes
-      Row 3   : main headers (No, Market, Customer, Products, Price USD, Price IDR,
-                              COGS Quantity, COGS Amount)
-      Row 4   : sub-headers  (year columns for Price, month names for Qty/Amount)
-      Row 5+  : data
+    Examples:
+      'Carboplatin 150 mg'    → 'Carboplatin'
+      'Paclitaxel 30 mg'      → 'Paclitaxel'
+      'Gemcitabine 200 mg - Liquid' → 'Gemcitabine'
+      'Darbepoetin alfa 20 mcg' → 'Darbepoetin alfa'
+    """
+    # Remove strength: "NNN unit" at end (mg, mcg, gr, g, ml, IU, L, mL, µg, μg)
+    base = re.sub(
+        r'\s+[\d,\.]+\s*(mg|mcg|gr|g(?!em)|ml|mL|L|IU|iu|µg|μg)(/\w+)?\s*$',
+        '', product_name, flags=re.IGNORECASE
+    ).strip()
+    # Remove trailing "- Liquid" or "Liquid"
+    base = re.sub(r'\s*[-–]\s*Liquid\s*$', '', base, flags=re.IGNORECASE).strip()
+    return base if base else product_name
 
-    Column mapping (0-indexed):
-      1  = No
-      2  = Market
-      3  = Customer
-      4  = Products (short name incl. weight)
-      5  = Price USD 2024
-      6  = Price USD 2025
-      7  = Price IDR 2024
-      8  = Price IDR 2025
-      9–20  = COGS Quantity Jan–Dec
-      21 = Total Quantity
-      22–33 = COGS Amount Jan–Dec (millions IDR)
-      34 = Total COGS Amount
-      37 = Full brand name (e.g. "Kemobotin / Carboplatin 150 mg")
+
+def make_product_code(base_name: str, market: str) -> str:
+    """Generate unique product_code <= 20 chars from base name + market."""
+    mkt_lower = market.lower()
+    mkt_code  = MARKET_CODE.get(mkt_lower, "OTH")
+    clean     = re.sub(r'[^A-Za-z0-9]', '', base_name)[:12].upper()
+    return f"{clean}_{mkt_code}"   # e.g. "PACLITAXEL_CMO" (max 16 chars)
+
+
+def parse_and_group(path: str) -> dict:
+    """Parse Excel and aggregate by (base_name, market, month).
+
+    Returns:
+      {
+        (base_name, market): {
+          'product_code': str,
+          'biz_type':     str,
+          'price_idr':    float,         # average weighted by qty
+          'qty':          [float x 12],  # total per month
+          'cogs_amt':     [float x 12],  # total (juta IDR) per month
+        }
+      }
     """
     wb = openpyxl.load_workbook(path, data_only=True)
     ws = wb.active
 
-    records = []
+    # Aggregation: key = (base_name, market)
+    groups: dict = {}
+
     for row in ws.iter_rows(min_row=5, values_only=True):
-        no = row[1]
+        no = row[1] if len(row) > 1 else None
         if no is None or not isinstance(no, (int, float)):
             continue
 
-        market = str(row[2] or "Public").strip()
+        market        = str(row[2] or "Public").strip()
         product_short = str(row[4] or "").strip()
-        product_full  = str(row[37] or row[4] or "").strip()
-        price_idr_2025 = float(row[8] or 0)
+        price_idr     = float(row[8] or 0) if len(row) > 8 else 0.0
+        full_name     = str(row[37] if len(row) > 37 and row[37] else row[4] or "").strip()
 
-        qty   = [float(row[9  + i] or 0) for i in range(12)]
-        cogs  = [float(row[22 + i] or 0) for i in range(12)]
+        qty      = [float(row[9  + i] or 0) if len(row) > 9  + i else 0.0 for i in range(12)]
+        cogs_amt = [float(row[22 + i] or 0) if len(row) > 22 + i else 0.0 for i in range(12)]
 
-        # Skip rows where all months are zero
-        if not any(qty) and not any(cogs):
+        # Skip rows with no data at all
+        if not any(qty) and not any(cogs_amt):
             continue
 
-        mkt_code = MARKET_CODE.get(market, "OTH")
-        product_code = f"{mkt_code}{int(no):03d}"   # e.g. PUB001, CMO003
+        base_name = extract_base_name(product_short)
+        key       = (base_name, market)
 
-        records.append({
-            "no":            int(no),
-            "market":        market,
-            "product_code":  product_code[:20],
-            "product_short": product_short,
-            "product_full":  product_full[:150],
-            "biz_type":      MARKET_BIZ_TYPE.get(market, "Local"),
-            "price_idr":     price_idr_2025,
-            "qty":           qty,    # list[float] len=12
-            "cogs_amt":      cogs,   # list[float] len=12, unit = millions IDR
-        })
+        if key not in groups:
+            groups[key] = {
+                "product_code": make_product_code(base_name, market)[:20],
+                "biz_type":     MARKET_BIZ_TYPE.get(market.lower(), "Local"),
+                "market":       market,
+                # Use the first full_name as display name; aggregate later
+                "display_name": f"{base_name} ({market})" if market != "Public" else base_name,
+                "price_idr":    price_idr,
+                "qty":          [0.0] * 12,
+                "cogs_amt":     [0.0] * 12,
+                "total_qty":    0.0,
+                "total_sales":  0.0,
+            }
 
-    return records
+        g = groups[key]
+        for i in range(12):
+            g["qty"][i]      += qty[i]
+            g["cogs_amt"][i] += cogs_amt[i]
+
+        # Weighted average price by quantity
+        row_total_qty   = sum(qty)
+        row_total_sales = price_idr * row_total_qty
+        g["total_qty"]   += row_total_qty
+        g["total_sales"] += row_total_sales
+
+    # Compute effective price_idr = total_sales / total_qty
+    for g in groups.values():
+        if g["total_qty"] > 0:
+            g["price_idr"] = g["total_sales"] / g["total_qty"]
+
+    return groups
 
 
 def run():
     print(f"[migrate_cogs] Connecting to: {DB_URL.split('@')[1]}")
-    pg = psycopg2.connect(DB_URL)
+    pg  = psycopg2.connect(DB_URL)
     cur = pg.cursor()
 
-    # ── Parse Excel ──────────────────────────────────────────────────
+    # ── Parse & group ────────────────────────────────────────────────
     print(f"[migrate_cogs] Reading {EXCEL_PATH}")
-    records = parse_excel(EXCEL_PATH)
-    print(f"[migrate_cogs] Parsed {len(records)} products with data")
+    groups = parse_and_group(EXCEL_PATH)
+    print(f"[migrate_cogs] {len(groups)} unique (product, market) groups after aggregation")
 
-    # ── Clear old COGS ETL data ──────────────────────────────────────
-    # Only delete rows that came from ETL (product_code is all-numeric, i.e. inventory_item_id)
-    # Keep manually-uploaded products.
-    # Safest: truncate fact_cogs completely then re-insert from this file.
+    # ── Clear old COGS data ──────────────────────────────────────────
     cur.execute("TRUNCATE eis.fact_cogs RESTART IDENTITY CASCADE")
-    # Remove old ETL-generated products (numeric codes from inventory_item_id)
-    cur.execute("""
-        DELETE FROM eis.dim_product
-        WHERE product_code ~ '^[0-9]+$'
-    """)
-    print("[migrate_cogs] Cleared old ETL COGS data")
+    # Remove ETL-generated products (all-numeric codes from inventory_item_id)
+    cur.execute("DELETE FROM eis.dim_product WHERE product_code ~ '^[0-9]+$'")
+    # Remove previously migrated products (code pattern XXXX_YYY)
+    cur.execute("DELETE FROM eis.dim_product WHERE product_code ~ '^[A-Z0-9]+_[A-Z]+$'")
+    print("[migrate_cogs] Cleared old COGS data")
 
     # ── Build period_id map ──────────────────────────────────────────
     cur.execute(
@@ -141,16 +176,19 @@ def run():
     )
     period_map = {row[0]: row[1] for row in cur.fetchall()}
     if not period_map:
-        print(f"[migrate_cogs] ERROR: No dim_period rows for year {FISCAL_YEAR}. Aborting.")
+        print(f"[migrate_cogs] ERROR: No dim_period rows for year {FISCAL_YEAR}.")
         sys.exit(1)
 
-    # ── Insert products & monthly fact_cogs ─────────────────────────
+    # ── Insert products & fact_cogs ──────────────────────────────────
     loaded_products = 0
-    loaded_cogs = 0
+    loaded_cogs     = 0
     skipped_periods = []
 
-    for rec in records:
-        # Upsert dim_product
+    for (base_name, market), g in sorted(groups.items()):
+        code      = g["product_code"]
+        disp_name = g["display_name"][:150]
+        biz_type  = g["biz_type"]
+
         cur.execute("""
             INSERT INTO eis.dim_product (product_code, product_name, business_type, market)
             VALUES (%s, %s, %s, %s)
@@ -158,30 +196,26 @@ def run():
                 product_name  = EXCLUDED.product_name,
                 business_type = EXCLUDED.business_type,
                 market        = EXCLUDED.market
-        """, (rec["product_code"], rec["product_full"] or rec["product_short"],
-              rec["biz_type"], rec["market"]))
+        """, (code, disp_name, biz_type, market))
 
-        cur.execute(
-            "SELECT id FROM eis.dim_product WHERE product_code = %s",
-            (rec["product_code"],)
-        )
+        cur.execute("SELECT id FROM eis.dim_product WHERE product_code = %s", (code,))
         product_id = cur.fetchone()[0]
         loaded_products += 1
 
-        # Insert monthly data
-        for month_idx, (qty, cogs_amt) in enumerate(zip(rec["qty"], rec["cogs_amt"])):
-            month_num = month_idx + 1
+        price_idr = g["price_idr"]
 
+        for month_idx, (qty, cogs_amt) in enumerate(zip(g["qty"], g["cogs_amt"])):
             if qty == 0 and cogs_amt == 0:
-                continue   # skip empty months
-
-            period_id = period_map.get(month_num)
-            if not period_id:
-                skipped_periods.append((rec["product_code"], month_num))
                 continue
 
-            # Sales amount = Price IDR × Quantity ÷ 1,000,000 (convert to millions IDR)
-            sales_amt = round(rec["price_idr"] * qty / 1_000_000, 4)
+            month_num = month_idx + 1
+            period_id = period_map.get(month_num)
+            if not period_id:
+                skipped_periods.append((code, month_num))
+                continue
+
+            # sales = Price IDR × Qty ÷ 1,000,000 (juta IDR)
+            sales_amt = round(price_idr * qty / 1_000_000, 4)
             ebit_amt  = round(sales_amt - cogs_amt, 4)
 
             cur.execute("""
@@ -196,10 +230,17 @@ def run():
             loaded_cogs += 1
 
     pg.commit()
+
     print(f"[migrate_cogs] Inserted/updated {loaded_products} products in dim_product")
     print(f"[migrate_cogs] Inserted/updated {loaded_cogs} rows in fact_cogs")
     if skipped_periods:
         print(f"[migrate_cogs] Skipped {len(skipped_periods)} period mismatches: {skipped_periods[:5]}")
+
+    # ── Summary ──────────────────────────────────────────────────────
+    cur.execute("SELECT COUNT(*) FROM eis.dim_product")
+    print(f"[migrate_cogs] dim_product total: {cur.fetchone()[0]} rows")
+    cur.execute("SELECT COUNT(*) FROM eis.fact_cogs")
+    print(f"[migrate_cogs] fact_cogs   total: {cur.fetchone()[0]} rows")
     print("[migrate_cogs] Done.")
     pg.close()
 
