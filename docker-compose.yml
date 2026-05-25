@@ -10,8 +10,6 @@ services:
       dockerfile: Dockerfile
     container_name: eis_backend
     env_file: .env
-    environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
     volumes:
       - ./backend:/app
       - oracle_client:/opt/oracle
