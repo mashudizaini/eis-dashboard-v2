@@ -80,7 +80,8 @@ def etl_sales(year: int = None, month: int = None):
       EXPORT : TRX_TYPE = 'SO-EXPORT'
 
     BP amounts sourced from eis.business_plan (plan_type = 'Sales').
-    Amounts in IDR (no conversion needed).
+    Amounts stored in millions IDR (Oracle OE raw IDR ÷ 1,000,000).
+    BP amounts from eis.business_plan are already in millions IDR.
     """
     year = year or datetime.now().year
     pg = _get_pg()
@@ -226,7 +227,8 @@ def etl_sales(year: int = None, month: int = None):
                 continue
 
             bp_amount = _get_bp(ora_year, ora_month, biz_type)
-            act = float(actual_amount or 0)
+            # Oracle OE amounts are in full IDR; dashboard expects millions IDR
+            act = float(actual_amount or 0) / 1_000_000
 
             cur_pg.execute(
                 "DELETE FROM eis.fact_sales "
@@ -270,6 +272,7 @@ def etl_cogs(year: int = None, month: int = None):
     product_code = inventory_item_id (string)
     product_name = ordered_item (item number / description as entered in OE)
     EBIT         = sales_amount − cogs_amount  (unit_cost from OE line)
+    Amounts stored in millions IDR (Oracle OE raw IDR ÷ 1,000,000).
     """
     year = year or datetime.now().year
     pg = _get_pg()
@@ -363,8 +366,9 @@ def etl_cogs(year: int = None, month: int = None):
                 logger.warning(f"[etl_cogs] No dim_period for {period_str}")
                 continue
 
-            sales = float(sales_amt or 0)
-            cogs  = float(cogs_amt  or 0)
+            # Oracle OE amounts are in full IDR; dashboard expects millions IDR
+            sales = float(sales_amt or 0) / 1_000_000
+            cogs  = float(cogs_amt  or 0) / 1_000_000
             ebit  = sales - cogs
 
             # Upsert dim_product (product_code is UNIQUE)
