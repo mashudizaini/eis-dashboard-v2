@@ -84,6 +84,8 @@ export const eisApi = {
   uploadOvertimeData: (year, formData) => api.post(`${EIS_PREFIX}/data-upload/overtime/upload`, formData, { params: { year } }),
   getCogsUploadData: (year, period) => api.get(`${EIS_PREFIX}/data-upload/cogs`, { params: { year, period } }),
   uploadCogsData: (year, formData) => api.post(`${EIS_PREFIX}/data-upload/cogs/upload`, formData, { params: { year } }),
+  getSalesBP: (year) => api.get(`${EIS_PREFIX}/data-upload/sales-bp`, { params: { year } }),
+  uploadSalesBP: (year, formData) => api.post(`${EIS_PREFIX}/data-upload/sales-bp/upload`, formData, { params: { year } }),
 };
 
 export default api;

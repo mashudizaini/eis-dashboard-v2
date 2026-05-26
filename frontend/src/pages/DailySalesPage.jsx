@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Upload, FileSpreadsheet, TrendingUp, Target, CheckCircle2, X } from 'lucide-react';
 import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer, ReferenceLine,
 } from 'recharts';
 import TopBar from '../components/layout/TopBar';
@@ -183,11 +183,19 @@ export default function DailySalesPage() {
               ))}
             </select>
           </div>
-          <ResponsiveContainer width="100%" height={260}>
-            <LineChart data={chartData} margin={{ right: 16, left: 8 }}>
+          <ResponsiveContainer width="100%" height={280}>
+            <ComposedChart data={chartData} margin={{ right: 16, left: 8, top: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-              <XAxis dataKey="wd" tick={{ fontSize: 11 }} label={{ value: 'Working Day', position: 'insideBottomRight', offset: -4, fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(1)}K`} width={52} />
+              <XAxis
+                dataKey="wd"
+                tick={{ fontSize: 11 }}
+                label={{ value: 'Working Day', position: 'insideBottomRight', offset: -4, fontSize: 10 }}
+              />
+              <YAxis
+                tick={{ fontSize: 11 }}
+                tickFormatter={(v) => `${(v / 1000).toFixed(1)}K`}
+                width={52}
+              />
               <Tooltip
                 formatter={(v, name) => [`${fmt(v, 2)} M IDR`, name]}
                 labelFormatter={(l) => `Working Day ${l}`}
@@ -195,12 +203,38 @@ export default function DailySalesPage() {
               />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               {monthTarget > 0 && (
-                <ReferenceLine y={monthTarget} stroke="#ef4444" strokeDasharray="6 3"
-                  label={{ value: `Target ${fmt(monthTarget, 0)}M`, fill: '#ef4444', fontSize: 10, position: 'insideTopRight' }} />
+                <ReferenceLine
+                  y={monthTarget}
+                  stroke="#1a5a73"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  label={{
+                    value: `BP ${fmt(monthTarget, 0)}M`,
+                    fill: '#1a5a73',
+                    fontSize: 10,
+                    position: 'insideTopRight',
+                  }}
+                />
               )}
-              <Line type="monotone" dataKey="acc" stroke="#1a5a73" strokeWidth={2.5} dot={false} name="Accumulated" />
-              <Line type="monotone" dataKey="sales" stroke="#d4a843" strokeWidth={1.5} dot={false} name="Daily Sales" />
-            </LineChart>
+              {/* Daily Sales → Bar (abu-abu) */}
+              <Bar
+                dataKey="sales"
+                fill="#9ca3af"
+                name="Sales"
+                maxBarSize={14}
+                radius={[2, 2, 0, 0]}
+              />
+              {/* Accumulated → Line (oranye) */}
+              <Line
+                type="monotone"
+                dataKey="acc"
+                stroke="#e07b39"
+                strokeWidth={2.5}
+                dot={{ r: 2.5, fill: '#e07b39', strokeWidth: 0 }}
+                activeDot={{ r: 5 }}
+                name="Acc Dec"
+              />
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
 

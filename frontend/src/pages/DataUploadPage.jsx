@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Upload, FileSpreadsheet, CheckCircle2, X, BarChart2, RefreshCw, Package } from 'lucide-react';
+import { Upload, FileSpreadsheet, CheckCircle2, X, BarChart2, RefreshCw, Package, TrendingUp } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell, ReferenceLine, LabelList,
@@ -35,6 +35,13 @@ export default function DataUploadPage() {
   const [cogsMsg, setCogsMsg]         = useState(null);
   const cogsFileRef = useRef(null);
 
+  // Sales BP state
+  const [salesBP, setSalesBP]             = useState([]);
+  const [bpLoading, setBpLoading]         = useState(true);
+  const [bpUploading, setBpUploading]     = useState(false);
+  const [bpMsg, setBpMsg]                 = useState(null);
+  const bpFileRef = useRef(null);
+
   const loadOvertime = async () => {
     setOtLoading(true);
     try {
@@ -53,8 +60,18 @@ export default function DataUploadPage() {
     setCogsLoading(false);
   };
 
+  const loadSalesBP = async () => {
+    setBpLoading(true);
+    try {
+      const res = await eisApi.getSalesBP(selectedYear);
+      setSalesBP(res.data.data || []);
+    } catch (err) { console.error(err); }
+    setBpLoading(false);
+  };
+
   useEffect(() => { loadOvertime(); }, [selectedYear]);
   useEffect(() => { loadCogs(); }, [selectedYear, selectedPeriod]);
+  useEffect(() => { loadSalesBP(); }, [selectedYear]);
 
   const handleOtUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -87,6 +104,25 @@ export default function DataUploadPage() {
       setCogsMsg({ type: 'err', text: 'Gagal: ' + (err.response?.data?.detail || err.message) });
     }
     setCogsUploading(false); e.target.value = '';
+  };
+
+  const handleBPUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBpUploading(true); setBpMsg(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await eisApi.uploadSalesBP(selectedYear, fd);
+      await loadSalesBP();
+      const note = res.data.detected_year && res.data.detected_year !== selectedYear
+        ? ` (tahun di file: ${res.data.detected_year})`
+        : '';
+      setBpMsg({ type: 'ok', text: res.data.message + note });
+    } catch (err) {
+      setBpMsg({ type: 'err', text: 'Gagal: ' + (err.response?.data?.detail || err.message) });
+    }
+    setBpUploading(false); e.target.value = '';
   };
 
   const YearSelector = () => (
@@ -136,7 +172,87 @@ export default function DataUploadPage() {
         </div>
       </div>
 
-      {/* ── Section 2: COGS ──────────────────────────────────── */}
+      {/* ── Section 2: Sales BP ──────────────────────────────── */}
+      <div className="chart-container mb-6">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="flex-1 min-w-[240px]">
+            <h3 className="font-display font-semibold text-gray-800 mb-1 flex items-center gap-2">
+              <TrendingUp size={16} className="text-blue-600" /> Upload Data Business Plan Sales
+            </h3>
+            <p className="text-xs text-gray-500 mb-1">
+              Format: baris header bulan (Jan–Dec), baris segmen (Total / Local / CMO / Export) + nilai per bulan.
+            </p>
+            <p className="text-xs text-gray-400 mb-2">
+              Nilai dalam <strong>juta IDR</strong>. Setelah upload, data BP langsung terupdate di
+              halaman Sales Performance (BP vs Actual).
+            </p>
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <FileSpreadsheet size={12} /><span>Referensi: DATA BP.xlsx</span>
+            </div>
+            <MsgBanner msg={bpMsg} onClose={() => setBpMsg(null)} />
+          </div>
+          <div className="flex flex-col gap-3 items-end shrink-0">
+            <YearSelector />
+            <button onClick={() => bpFileRef.current?.click()} disabled={bpUploading}
+              className="flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-60">
+              {bpUploading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Upload size={15} />}
+              {bpUploading ? 'Mengupload...' : 'Pilih File (.xlsx)'}
+            </button>
+            <input ref={bpFileRef} type="file" accept=".xlsx,.xls" className="hidden" onChange={handleBPUpload} />
+          </div>
+        </div>
+      </div>
+
+      {/* ── Sales BP Preview ─────────────────────────────────── */}
+      {!bpLoading && salesBP.length > 0 && (
+        <div className="chart-container mb-6">
+          <div className="flex items-center justify-between mb-4 gap-3">
+            <h3 className="font-display font-semibold text-gray-800">
+              Sales Business Plan — {selectedYear}
+            </h3>
+            <button onClick={loadSalesBP} className="flex items-center gap-1.5 text-sm text-pharma-600 hover:text-pharma-800">
+              <RefreshCw size={13} /> Refresh
+            </button>
+          </div>
+          <div className="overflow-x-auto rounded-lg border border-gray-200">
+            <table className="text-xs border-collapse" style={{ minWidth: '900px', width: '100%' }}>
+              <thead>
+                <tr className="bg-blue-900 text-white">
+                  <th className="px-3 py-2.5 text-left font-semibold sticky left-0 bg-blue-900 z-10">Segmen</th>
+                  {['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'].map((m) => (
+                    <th key={m} className="px-2 py-2.5 text-right font-semibold">{m}</th>
+                  ))}
+                  <th className="px-3 py-2.5 text-right font-semibold">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {salesBP.map((row, i) => {
+                  const months = [row.jan, row.feb, row.mar, row.apr, row.may, row.jun,
+                                   row.jul, row.aug, row.sep, row.oct, row.nov, row.dec];
+                  const isTotal = row.category === 'Total';
+                  return (
+                    <tr key={i} className={`border-b border-gray-100 ${isTotal ? 'bg-blue-50 font-semibold' : i % 2 === 0 ? 'bg-white' : 'bg-gray-50/50'}`}>
+                      <td className={`px-3 py-2 sticky left-0 z-10 ${isTotal ? 'bg-blue-50 font-bold text-blue-800' : 'bg-inherit text-gray-700 font-medium'}`}>
+                        {row.category}
+                      </td>
+                      {months.map((v, mi) => (
+                        <td key={mi} className="px-2 py-2 text-right font-mono text-gray-700">
+                          {v != null ? Number(v).toLocaleString('id-ID', { maximumFractionDigits: 0 }) : '—'}
+                        </td>
+                      ))}
+                      <td className={`px-3 py-2 text-right font-mono font-bold ${isTotal ? 'text-blue-800' : 'text-gray-800'}`}>
+                        {row.total != null ? Number(row.total).toLocaleString('id-ID', { maximumFractionDigits: 0 }) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── Section 3: COGS ──────────────────────────────────── */}
       <div className="chart-container mb-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex-1 min-w-[240px]">

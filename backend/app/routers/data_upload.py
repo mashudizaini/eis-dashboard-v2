@@ -359,7 +359,7 @@ async def upload_cogs(
                 market        = EXCLUDED.market
         """), {
             "code": rec["product_code"],
-            "name": rec["product_full"],
+            "name": rec["display_name"],
             "biz":  rec["biz_type"],
             "mkt":  rec["market"],
         })
@@ -405,7 +405,7 @@ async def upload_cogs(
 
         results.append({
             "product_code":  rec["product_code"],
-            "product_name":  rec["product_full"],
+            "product_name":  rec["display_name"],
             "market":        rec["market"],
             "months_loaded": month_loaded,
         })
@@ -422,4 +422,269 @@ async def upload_cogs(
         "cogs_rows": loaded_cogs,
         "skipped": skipped,
         "data":    results,
+    }
+
+
+# ══════════════════════════════════════════════════════════════
+# SALES BP Upload — format DATA BP.xlsx
+#
+# Format Excel yang didukung:
+#   Row header bulan (Jan–Dec) diikuti baris segment:
+#     Total  | 800 | 900 | ... | 880 |
+#     Local  | 500 | 600 | ... | 550 |
+#     CMO    | 200 | 200 | ... | 220 |
+#     Export | 100 | 100 | ... | 110 |
+#   (atau format matriks serupa, label di kolom pertama)
+#
+# Nilai dalam juta IDR.
+# ══════════════════════════════════════════════════════════════
+
+_SEGMENT_MAP = {
+    'local': 'Local', 'lokal': 'Local', 'total local': 'Local', 'total lokal': 'Local',
+    'cmo': 'CMO', 'total cmo': 'CMO',
+    'export': 'Export', 'ekspor': 'Export', 'total export': 'Export', 'total ekspor': 'Export',
+    'total': 'Total', 'grand total': 'Total', 'jumlah': 'Total',
+}
+
+_BP_MONTH_SHORT = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+_BP_MONTH_LONG  = ['january', 'february', 'march', 'april', 'may', 'june',
+                   'july', 'august', 'september', 'october', 'november', 'december']
+
+
+def _parse_sales_bp_excel(content: bytes) -> dict:
+    """Parse DATA BP.xlsx untuk mendapatkan monthly sales BP per segment.
+
+    Mendukung dua strategi:
+    A) Row header bulan ditemukan → baca baris setelahnya berdasarkan label segment.
+    B) Fallback: scan baris yang mengandung label segment + 12 angka berurutan.
+
+    Returns:
+        {
+            'segments': {'Total': [12 floats], 'Local': [...], 'CMO': [...], 'Export': [...]},
+            'detected_year': int | None,
+        }
+    """
+    try:
+        import openpyxl
+    except ImportError:
+        raise HTTPException(status_code=500, detail="openpyxl not installed")
+
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.active
+    all_rows = list(ws.iter_rows(min_row=1, values_only=True))
+
+    # Deteksi tahun dari 5 baris pertama
+    detected_year = None
+    for row in all_rows[:5]:
+        for v in (row or []):
+            if isinstance(v, (int, float)) and 2020 <= v <= 2030:
+                detected_year = int(v)
+                break
+        if detected_year:
+            break
+
+    # Strategi A: cari header row yang berisi nama bulan
+    header_row_idx = None
+    month_col_map: dict[int, int] = {}
+
+    for row_idx, row in enumerate(all_rows):
+        if not row:
+            continue
+        row_lower = [str(v).strip().lower() if v is not None else '' for v in row]
+        found: list[tuple[int, int]] = []
+        for col_idx, cell in enumerate(row_lower):
+            for m_idx, (sh, lo) in enumerate(zip(_BP_MONTH_SHORT, _BP_MONTH_LONG)):
+                if cell in (sh, lo):
+                    found.append((m_idx, col_idx))
+                    break
+        if len(found) >= 6:
+            header_row_idx = row_idx
+            for m_idx, col_idx in found:
+                month_col_map[m_idx] = col_idx
+            break
+
+    segments: dict[str, list[float]] = {}
+
+    if header_row_idx is not None and len(month_col_map) >= 10:
+        for row in all_rows[header_row_idx + 1:]:
+            if not row:
+                continue
+            label = None
+            for v in list(row)[:6]:
+                if v is not None:
+                    s = str(v).strip().lower()
+                    if s in _SEGMENT_MAP:
+                        label = _SEGMENT_MAP[s]
+                        break
+            if not label:
+                continue
+
+            monthly: list[float] = []
+            for m_idx in range(12):
+                col_idx = month_col_map.get(m_idx)
+                val = row[col_idx] if col_idx is not None and col_idx < len(row) else None
+                monthly.append(float(val) if isinstance(val, (int, float)) else 0.0)
+
+            if any(v > 0 for v in monthly):
+                segments[label] = monthly
+    else:
+        # Strategi B: scan setiap baris
+        for row in all_rows:
+            if not row:
+                continue
+            for i, v in enumerate(row):
+                if v is None:
+                    continue
+                s = str(v).strip().lower()
+                if s in _SEGMENT_MAP:
+                    label = _SEGMENT_MAP[s]
+                    nums = [x for x in row[i + 1:] if isinstance(x, (int, float))]
+                    if len(nums) >= 12:
+                        segments[label] = [float(x) for x in nums[:12]]
+                    break
+
+    if not segments:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Format file tidak dapat dibaca. "
+                "Pastikan file memiliki header bulan (Jan–Dec) dan baris segment "
+                "(Total / Local / CMO / Export). "
+                "Nilai dalam juta IDR."
+            ),
+        )
+
+    return {'segments': segments, 'detected_year': detected_year}
+
+
+@router.get("/sales-bp")
+async def get_sales_bp(
+    year: int = Query(2025),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Return Sales BP per segment per month dari tabel business_plan."""
+    q = text("""
+        SELECT category,
+               jan, feb, mar, apr, may, jun,
+               jul, aug, sep, oct, nov, "dec", total
+        FROM eis.business_plan
+        WHERE fiscal_year = :year AND plan_type = 'Sales'
+        ORDER BY
+            CASE category
+                WHEN 'Total'  THEN 0
+                WHEN 'Local'  THEN 1
+                WHEN 'CMO'    THEN 2
+                WHEN 'Export' THEN 3
+                ELSE 4 END
+    """)
+    result = await db.execute(q, {"year": year})
+    return {"data": [dict(r) for r in result.mappings().all()]}
+
+
+@router.post("/sales-bp/upload")
+async def upload_sales_bp(
+    year: int = Query(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Parse DATA BP.xlsx, simpan ke business_plan, dan update fact_sales.bp_amount.
+
+    Segmen yang didukung: Total, Local, CMO, Export.
+    Nilai dalam juta IDR.
+
+    Setelah upload:
+    - Tabel business_plan di-update (referensi untuk ETL berikutnya).
+    - fact_sales.bp_amount langsung di-update per bulan per segmen.
+    """
+    if not file.filename.endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=422, detail="File harus .xlsx atau .xls")
+
+    content = await file.read()
+    parsed   = _parse_sales_bp_excel(content)
+    segments = parsed['segments']
+
+    created_by = user.get('name', user.get('username', 'upload'))
+    loaded_bp     = 0
+    updated_sales = 0
+
+    for category, monthly_vals in segments.items():
+        # ── Upsert business_plan ────────────────────────────────────
+        # Hapus dulu karena UNIQUE constraint tidak bisa pakai ON CONFLICT
+        # dengan sub_category IS NULL (NULL != NULL di Postgres).
+        await db.execute(text("""
+            DELETE FROM eis.business_plan
+            WHERE fiscal_year = :year
+              AND plan_type   = 'Sales'
+              AND category    = :cat
+              AND sub_category IS NULL
+        """), {"year": year, "cat": category})
+
+        m = monthly_vals
+        await db.execute(text("""
+            INSERT INTO eis.business_plan
+                (fiscal_year, plan_type, category, sub_category,
+                 jan, feb, mar, apr, may, jun, jul, aug, sep, oct, nov, "dec",
+                 created_by, updated_at)
+            VALUES
+                (:year, 'Sales', :cat, NULL,
+                 :m0,:m1,:m2,:m3,:m4,:m5,:m6,:m7,:m8,:m9,:m10,:m11,
+                 :created_by, NOW())
+        """), {
+            "year": year, "cat": category, "created_by": created_by,
+            "m0": m[0],  "m1": m[1],  "m2": m[2],  "m3": m[3],
+            "m4": m[4],  "m5": m[5],  "m6": m[6],  "m7": m[7],
+            "m8": m[8],  "m9": m[9],  "m10": m[10], "m11": m[11],
+        })
+        loaded_bp += 1
+
+        # ── Update fact_sales.bp_amount langsung ────────────────────
+        if category in ('Local', 'CMO', 'Export'):
+            for month_idx, bp_val in enumerate(monthly_vals):
+                period_res = await db.execute(
+                    text("SELECT id FROM eis.dim_period WHERE fiscal_year=:y AND period_num=:p"),
+                    {"y": year, "p": month_idx + 1},
+                )
+                period_row = period_res.fetchone()
+                if not period_row:
+                    continue
+                period_id = period_row[0]
+
+                # Coba UPDATE dulu
+                upd = await db.execute(text("""
+                    UPDATE eis.fact_sales
+                       SET bp_amount  = :bp,
+                           updated_at = NOW()
+                     WHERE period_id    = :pid
+                       AND business_type = :biz
+                       AND market       = 'All'
+                       AND product_id IS NULL
+                """), {"bp": round(bp_val, 2), "pid": period_id, "biz": category})
+
+                if upd.rowcount == 0:
+                    # Belum ada baris ETL → insert baru
+                    await db.execute(text("""
+                        INSERT INTO eis.fact_sales
+                            (period_id, product_id, business_type, market, bp_amount, actual_amount)
+                        VALUES (:pid, NULL, :biz, 'All', :bp, 0)
+                    """), {"pid": period_id, "biz": category, "bp": round(bp_val, 2)})
+
+                updated_sales += 1
+
+    await db.commit()
+    logger.info(
+        f"[upload_sales_bp] {loaded_bp} segments, {updated_sales} fact_sales rows, year={year}"
+    )
+
+    return {
+        "message": (
+            f"Berhasil upload Business Plan: {loaded_bp} segmen, "
+            f"{updated_sales} baris sales diupdate untuk tahun {year}"
+        ),
+        "year":               year,
+        "loaded_segments":    loaded_bp,
+        "updated_sales_rows": updated_sales,
+        "detected_year":      parsed.get("detected_year"),
+        "data": {cat: vals for cat, vals in segments.items()},
     }
