@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid,
-  Tooltip, Legend, ResponsiveContainer, Cell, LabelList,
+  BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, Legend, ResponsiveContainer, Cell, LabelList, ReferenceLine,
 } from 'recharts';
 import TopBar from '../components/layout/TopBar';
 import Loading from '../components/common/Loading';
@@ -98,14 +98,40 @@ export default function PerformancePage() {
         <div className="chart-container">
           <h3 className="font-display font-semibold text-gray-800 mb-4">Cumulative achievement trend</h3>
           <ResponsiveContainer width="100%" height={280}>
-            <LineChart data={achievement}>
+            <BarChart data={achievement} barCategoryGap="25%">
               <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
               <XAxis dataKey="period_name" tick={{ fontSize: 11 }} tickFormatter={(v) => v.slice(0, 3)} />
-              <YAxis tick={{ fontSize: 11 }} unit="%" domain={[0, 120]} />
-              <Tooltip contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }} />
-              <Line type="monotone" dataKey="achievement_pct" stroke="#1a5a73" strokeWidth={2.5} dot={{ r: 3 }} name="Achievement %" />
-              <Line type="monotone" dataKey={() => 100} stroke="#ef4444" strokeWidth={1} strokeDasharray="5 5" dot={false} name="Target 100%" />
-            </LineChart>
+              <YAxis tick={{ fontSize: 11 }} unit="%" domain={[0, 130]} />
+              <Tooltip
+                formatter={(v) => [`${Number(v).toFixed(1)}%`, 'Achievement']}
+                contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+              />
+              <ReferenceLine
+                y={100}
+                stroke="#ef4444"
+                strokeDasharray="6 3"
+                strokeWidth={1.5}
+                label={{ value: 'Target 100%', fill: '#ef4444', fontSize: 10, position: 'insideTopRight' }}
+              />
+              <Bar dataKey="achievement_pct" name="Achievement %" radius={[4, 4, 0, 0]} maxBarSize={40}>
+                {achievement.map((entry, i) => (
+                  <Cell
+                    key={i}
+                    fill={
+                      Number(entry.achievement_pct) >= 100 ? '#10b981'
+                      : Number(entry.achievement_pct) >= 80  ? '#d4a843'
+                      : '#ef4444'
+                    }
+                  />
+                ))}
+                <LabelList
+                  dataKey="achievement_pct"
+                  position="top"
+                  formatter={(v) => `${Number(v).toFixed(0)}%`}
+                  style={{ fontSize: 10, fontWeight: 600, fill: '#374151' }}
+                />
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
