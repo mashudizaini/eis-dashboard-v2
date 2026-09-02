@@ -100,6 +100,70 @@ const emagazineAPI = {
       throw error;
     }
   },
+
+  // Get hotspots for a page
+  getPageHotspots: async (editionId, pageNum) => {
+    try {
+      const res = await axios.get(
+        `${API_BASE}/emagazine/hotspots/editions/${editionId}/pages/${pageNum}`
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error fetching hotspots:', error);
+      return [];
+    }
+  },
+
+  // Get all hotspots for edition
+  getEditionHotspots: async (editionId) => {
+    try {
+      const res = await axios.get(
+        `${API_BASE}/emagazine/hotspots/editions/${editionId}`
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error fetching hotspots:', error);
+      return [];
+    }
+  },
+
+  // Create hotspot
+  createHotspot: async (editionId, hotspot) => {
+    try {
+      const res = await axios.post(`${API_BASE}/emagazine/hotspots`, {
+        edition_id: editionId,
+        ...hotspot,
+      });
+      return res.data;
+    } catch (error) {
+      console.error('Error creating hotspot:', error);
+      throw error;
+    }
+  },
+
+  // Update hotspot
+  updateHotspot: async (hotspotId, hotspot) => {
+    try {
+      const res = await axios.put(
+        `${API_BASE}/emagazine/hotspots/${hotspotId}`,
+        hotspot
+      );
+      return res.data;
+    } catch (error) {
+      console.error('Error updating hotspot:', error);
+      throw error;
+    }
+  },
+
+  // Delete hotspot
+  deleteHotspot: async (hotspotId) => {
+    try {
+      await axios.delete(`${API_BASE}/emagazine/hotspots/${hotspotId}`);
+    } catch (error) {
+      console.error('Error deleting hotspot:', error);
+      throw error;
+    }
+  },
 };
 
 export default emagazineAPI;
