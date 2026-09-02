@@ -173,6 +173,81 @@ Response:
 }
 ```
 
+### Hotspot Endpoints (Phase 3)
+
+#### Get Hotspots for Page
+```bash
+GET /api/emagazine/hotspots/editions/{edition_id}/pages/{page_num}
+```
+
+Response:
+```json
+[
+  {
+    "id": 1,
+    "edition_id": 1,
+    "page_number": 5,
+    "x_pos": 100,
+    "y_pos": 150,
+    "width": 200,
+    "height": 80,
+    "action_type": "contact",
+    "action_data": {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "phone": "+62-123-4567"
+    },
+    "tooltip": "Click for contact",
+    "created_at": "2024-09-02T10:30:00"
+  }
+]
+```
+
+#### Create Hotspot
+```bash
+POST /api/emagazine/hotspots
+Content-Type: application/json
+
+{
+  "edition_id": 1,
+  "page_number": 5,
+  "x_pos": 100,
+  "y_pos": 150,
+  "width": 200,
+  "height": 80,
+  "action_type": "contact",
+  "action_data": {...},
+  "tooltip": "Click for contact"
+}
+```
+
+#### Update Hotspot
+```bash
+PUT /api/emagazine/hotspots/{id}
+Content-Type: application/json
+
+{
+  "action_data": {...},
+  "tooltip": "Updated tooltip"
+}
+```
+
+#### Delete Hotspot
+```bash
+DELETE /api/emagazine/hotspots/{id}
+```
+
+#### Batch Create Hotspots
+```bash
+POST /api/emagazine/hotspots/batch/editions/{edition_id}
+Content-Type: application/json
+
+[
+  {...hotspot1...},
+  {...hotspot2...}
+]
+```
+
 ## Development Phases
 
 ### ✅ Phase 1 (COMPLETED)
@@ -197,20 +272,31 @@ Response:
 - [x] Sidebar navigation link
 - [x] Route setup (/emagazine)
 
-### 🔄 Phase 3 (NEXT)
-- [ ] Hotspot management (define clickable areas)
-  - [ ] Create hotspots database entries
-  - [ ] Define clickable rectangles (x, y, width, height)
-  - [ ] Configure action types (link, modal, video, form)
-- [ ] Interactive modals
-  - [ ] Profile/detail modal for clickable areas
-  - [ ] Video embedding
-  - [ ] Form/survey modals
-  - [ ] Link handling
-- [ ] QR code generation
-  - [ ] Generate QR for share/contact
-  - [ ] Display in modals
-- [ ] Keycloak auth integration for analytics user tracking
+### ✅ Phase 3 (COMPLETED)
+- [x] Backend hotspot management API (CRUD operations)
+  - [x] GET /api/emagazine/hotspots/editions/{id} (list)
+  - [x] GET /api/emagazine/hotspots/editions/{id}/pages/{num} (get for page)
+  - [x] POST /api/emagazine/hotspots (create)
+  - [x] PUT /api/emagazine/hotspots/{id} (update)
+  - [x] DELETE /api/emagazine/hotspots/{id} (delete)
+  - [x] Batch create endpoint
+- [x] Interactive modals (5 types)
+  - [x] ContactModal - Profile/contact with QR code
+  - [x] LinkModal - External links with copy button
+  - [x] VideoModal - YouTube/Vimeo embed
+  - [x] Modal placeholder for forms and QR codes
+  - [x] Base Modal component (reusable)
+- [x] Hotspot SVG overlay layer
+  - [x] Clickable areas with hover effects
+  - [x] Tooltips on hover
+  - [x] Action type indicators (colored circles)
+  - [x] Responsive positioning
+- [x] QR code generation (contact modal)
+  - [x] Generate mailto QR codes
+  - [x] Display in contact modals
+- [x] Analytics tracking for hotspot clicks
+- [x] API methods for hotspot management
+- [x] Frontend-backend integration
 
 ### 📋 Phase 4 (PLANNED)
 - [ ] Admin interface for:
@@ -219,7 +305,7 @@ Response:
   - [ ] Configure actions
   - [ ] View analytics dashboard
 
-## Frontend Structure (Phase 2)
+## Frontend Structure (Phase 2-3)
 
 ### Directory Layout
 ```
@@ -229,13 +315,18 @@ frontend/src/
 ├── components/
 │   └── emagazine/
 │       ├── NavigationBar.jsx      # Top nav with pagination & tools
-│       ├── PageViewer.jsx         # Content display component
+│       ├── PageViewer.jsx         # Content display + hotspots + modals
 │       ├── SearchBar.jsx          # Search interface
-│       └── TableOfContents.jsx    # Sidebar with TOC
+│       ├── TableOfContents.jsx    # Sidebar with TOC
+│       ├── HotspotLayer.jsx       # SVG overlay for interactive areas
+│       ├── Modal.jsx              # Base modal component
+│       ├── ContactModal.jsx       # Profile/contact info modal
+│       ├── LinkModal.jsx          # External link modal
+│       └── VideoModal.jsx         # Video embedding modal
 ├── stores/
 │   └── emagazineStore.js          # Zustand state management
 └── utils/
-    └── emagazineApi.js            # API client
+    └── emagazineApi.js            # API client + hotspot methods
 ```
 
 ### State Management (Zustand)
@@ -393,58 +484,77 @@ curl -X POST "http://localhost:8001/api/emagazine/analytics?edition_id=1" \
 
 ## Next Steps
 
-### Immediate (Phase 2 Verification)
-1. **Test Full Stack**
+### Immediate (Phase 3 Testing)
+1. **Install Dependencies**
+   ```bash
+   cd frontend
+   npm install  # Install qrcode.react
+   ```
+
+2. **Test with Sample Data**
    ```bash
    # Terminal 1: Backend
    cd backend
-   python create_emagazine_tables.py
-   python parse_emagazine_pdf.py
    python -m uvicorn app.main:app --reload --port 8001
 
    # Terminal 2: Frontend
    cd frontend
    npm run dev
 
-   # Browser: http://localhost:3001/emagazine
+   # Terminal 3: Create sample hotspots
+   curl -X POST http://localhost:8001/api/emagazine/hotspots \
+     -H "Content-Type: application/json" \
+     -d '{
+       "edition_id": 1,
+       "page_number": 5,
+       "x_pos": 100,
+       "y_pos": 150,
+       "width": 200,
+       "height": 80,
+       "action_type": "contact",
+       "action_data": {
+         "name": "John Doe",
+         "title": "Manager",
+         "email": "john@example.com",
+         "phone": "+62-123-4567",
+         "bio": "Team lead"
+       },
+       "tooltip": "Click for contact"
+     }'
    ```
 
-2. **Verify Integration**
-   - Check page loads without errors
-   - Verify API calls in Network tab
-   - Test all navigation features
-   - Confirm search works
+3. **Manual Testing**
+   - Navigate to http://localhost:3001/emagazine
+   - Hover over hotspots (should see tooltip)
+   - Click hotspot → modal opens
+   - Test contact modal with QR code
+   - Test video embed modal
+   - Verify analytics tracking in Network tab
 
-### Phase 3: Interactive Elements
-1. **Hotspot Management**
-   - Create admin UI to define clickable areas on pages
-   - Store hotspots in database (emagazine_hotspots table)
-   - Position on page using SVG overlay
+### Phase 4: Admin Interface & Deployment (PLANNED)
+1. **Hotspot Admin Tool**
+   - New page: `/admin/emagazine`
+   - List all hotspots for edition
+   - Visual editor: Click on page to create hotspots
+   - Edit/delete existing hotspots
+   - Configure action data
 
-2. **Modal System**
-   - Build ModalContainer component
-   - Support different action types:
-     * Link (external URL)
-     * Contact (email/phone)
-     * Form (embedded)
-     * Video (embed iframe)
-     * Profile (modal with details)
+2. **Edition Management**
+   - Upload new PDF editions
+   - Auto-parse & populate database
+   - Manage edition metadata
 
-3. **QR Code Integration**
-   - Add qrcode library: `npm install qrcode.react`
-   - Generate QR for page links
-   - Display in share modal
+3. **Analytics Dashboard**
+   - Popular pages chart (bar/line)
+   - Search trends (word cloud)
+   - User engagement metrics (heatmap)
+   - Hotspot click tracking
 
-### Phase 4: Admin & Analytics
-1. **Hotspot Admin Interface**
-   - Create/edit/delete hotspots
-   - Position tool (click on page to create)
-   - Configure actions
-
-2. **Analytics Dashboard**
-   - Popular pages chart
-   - Search trends
-   - User engagement metrics
+4. **Performance & Deployment**
+   - Optimize hotspot rendering
+   - Cache page content
+   - Image optimization
+   - Production deployment checklist
 
 ## Troubleshooting
 
