@@ -248,6 +248,29 @@ Content-Type: application/json
 ]
 ```
 
+### Upload New Edition (Phase 4.2)
+```bash
+POST /api/emagazine/editions/upload
+Content-Type: multipart/form-data
+
+Form Fields:
+- title: string (Edition title)
+- edition_number: integer (Edition version number)
+- published_date: string (YYYY-MM-DD format)
+- file: PDF file upload
+
+Response:
+{
+  "id": 2,
+  "title": "CKD OTTO E-Magazine 4th Edition",
+  "edition_number": 4,
+  "published_date": "2026-09-02",
+  "total_pages": 216,
+  "created_at": "2026-09-02T10:30:00",
+  "message": "Edition uploaded successfully. 216 pages parsed and indexed."
+}
+```
+
 ## Development Phases
 
 ### ✅ Phase 1 (COMPLETED)
@@ -450,6 +473,48 @@ Location: `frontend/src/components/ui/Tabs.jsx`
   - TabsTrigger: Individual tab button
   - TabsContent: Content container for tab
 - Styling: Blue underline for active state, hover effects
+
+#### 4. HotspotEditor (Phase 4.2)
+Location: `frontend/src/components/emagazine/HotspotEditor.jsx`
+
+**Functionality:**
+- Visual hotspot creation with click-and-drag on SVG canvas
+- Drag existing hotspots to move or resize
+- Delete hotspots with button click
+- Page-based filtering for specific page hotspots
+- Real-time hotspot list display
+
+**Features:**
+- **Create Mode**: Click and drag on canvas to create new hotspot
+- **Edit Mode**: Click hotspot to select, show handles and delete button
+- **Drag to Move**: Drag selected hotspot to reposition
+- **Resize Handle**: Drag SE corner to resize hotspot
+- **Delete Button**: Click top-right corner button to delete
+- **Hotspots List**: Shows all hotspots on current page with type indicator
+
+**Props:**
+- `hotspots`: Array of hotspot objects
+- `editionId`: Current edition ID
+- `pageNumber`: Current page being edited
+- `onCreateHotspot`: Callback when new hotspot is created
+- `onUpdateHotspot`: Callback when hotspot position/size changes
+- `onDeleteHotspot`: Callback when hotspot is deleted
+- `disabled`: Boolean to disable editing
+
+## PDF Parser Utility (Phase 4.2)
+
+Location: `backend/app/utils/pdf_parser.py`
+
+**Functions:**
+- `extract_text_from_pdf(pdf_path)` - Extracts text using pdftotext subprocess
+- `split_text_by_pages(text)` - Splits text by form feed characters into pages
+- `identify_section(text)` - Identifies which section (Opening, Company News, etc)
+- `clean_text(text)` - Cleans and normalizes extracted text
+- `populate_database(...)` - Creates edition and content entries in database
+- `check_edition_exists(...)` - Checks if edition number already exists
+
+**Usage:**
+Used by both `parse_emagazine_pdf.py` script and the upload endpoint to maintain consistency in PDF parsing logic.
 
 ## Frontend Integration (Phase 2-3 Complete)
 
@@ -658,25 +723,45 @@ curl -X POST "http://localhost:8001/api/emagazine/analytics?edition_id=1" \
    - EditionUploader form
    - Reusable Tabs component
 
-### 📋 Phase 4.2: Backend PDF Upload & Visual Editor (PLANNED)
-1. **Backend PDF Upload Endpoint**
-   - POST /api/emagazine/editions/upload
-   - Accept multipart/form-data with PDF file
-   - Auto-parse using pdftotext
-   - Create new edition entry
-   - Populate content in database
+### ✅ Phase 4.2: Backend PDF Upload & Visual Editor (COMPLETED)
+1. **Backend PDF Upload Endpoint** ✅
+   - POST /api/emagazine/editions/upload with multipart/form-data
+   - Accepts title, edition_number, published_date, PDF file
+   - Auto-parses PDF using pdftotext via pdf_parser utility
+   - Creates new edition entry and populates content in database
+   - Validates edition number uniqueness
+   - Returns parsed edition with page count and success message
+   - Comprehensive error handling for file operations
 
-2. **Visual Hotspot Editor**
-   - Click on page to create hotspots
-   - Drag to position and resize
-   - Visual feedback for existing hotspots
-   - Quick action type assignment
+2. **Visual Hotspot Editor** ✅
+   - HotspotEditor component for visual hotspot creation/editing
+   - Click and drag to create hotspots on page canvas
+   - Drag to move hotspots (click and drag on hotspot)
+   - Resize hotspots (drag SE corner handle)
+   - Visual delete button for each hotspot
+   - Page selector to switch between pages
+   - Active hotspots list showing tooltip and type
+   - Seamless integration with HotspotManager form
 
-3. **Performance & Deployment**
-   - Optimize hotspot rendering
+3. **UI/UX Improvements** ✅
+   - Toggle between "List" and "Visual Editor" modes in HotspotManager
+   - Visual feedback with color-coded hotspots (blue when editing)
+   - Hotspot preview during creation (green dashed box)
+   - Drag handles and delete buttons visible when editing
+   - Hotspot list with quick reference to position and action type
+
+### 📋 Phase 5: Performance & Deployment (PLANNED)
+1. **Performance Optimization**
    - Cache page content
+   - Optimize hotspot rendering for large datasets
    - Image optimization
+   - Database query optimization with proper indexes
+
+2. **Deployment**
    - Production deployment checklist
+   - Environment configuration
+   - Database migration guide
+   - SSL/TLS setup
 
 ## Troubleshooting
 
