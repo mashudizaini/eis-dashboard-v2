@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, useLocation } from 'react-router-dom';
 import useAuthStore from './stores/authStore';
 import Sidebar from './components/layout/Sidebar';
 import SummaryPage from './pages/SummaryPage';
@@ -11,6 +11,7 @@ import BusinessPlanPage from './pages/BusinessPlanPage';
 import EtlPage from './pages/EtlPage';
 import DailySalesPage from './pages/DailySalesPage';
 import DataUploadPage from './pages/DataUploadPage';
+import EMagazinePage from './pages/EMagazinePage';
 
 function AuthGate({ children }) {
   const { init, authenticated, loading } = useAuthStore();
@@ -50,26 +51,43 @@ function AuthGate({ children }) {
   return children;
 }
 
+function AppRoutes() {
+  const location = useLocation();
+  const isEMagazine = location.pathname === '/emagazine';
+
+  if (isEMagazine) {
+    return <EMagazinePage />;
+  }
+
+  return (
+    <div className="flex min-h-screen">
+      <Sidebar />
+      <main className="flex-1 ml-[260px] p-6 transition-all duration-300">
+        <Routes>
+          <Route path="/" element={<SummaryPage />} />
+          <Route path="/daily-sales" element={<DailySalesPage />} />
+          <Route path="/performance" element={<PerformancePage />} />
+          <Route path="/production" element={<ProductionPage />} />
+          <Route path="/expansion" element={<ExpansionPage />} />
+          <Route path="/administration" element={<AdministrationPage />} />
+          <Route path="/business-plan" element={<BusinessPlanPage />} />
+          <Route path="/etl" element={<EtlPage />} />
+          <Route path="/data-upload" element={<DataUploadPage />} />
+          <Route path="/emagazine" element={<EMagazinePage />} />
+        </Routes>
+      </main>
+    </div>
+  );
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthGate>
-        <div className="flex min-h-screen">
-          <Sidebar />
-          <main className="flex-1 ml-[260px] p-6 transition-all duration-300">
-            <Routes>
-              <Route path="/" element={<SummaryPage />} />
-              <Route path="/daily-sales" element={<DailySalesPage />} />
-              <Route path="/performance" element={<PerformancePage />} />
-              <Route path="/production" element={<ProductionPage />} />
-              <Route path="/expansion" element={<ExpansionPage />} />
-              <Route path="/administration" element={<AdministrationPage />} />
-              <Route path="/business-plan" element={<BusinessPlanPage />} />
-              <Route path="/etl" element={<EtlPage />} />
-              <Route path="/data-upload" element={<DataUploadPage />} />
-            </Routes>
-          </main>
-        </div>
+        <Routes>
+          <Route path="/emagazine" element={<EMagazinePage />} />
+          <Route path="*" element={<AppRoutes />} />
+        </Routes>
       </AuthGate>
     </BrowserRouter>
   );

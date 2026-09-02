@@ -2,7 +2,7 @@ import { NavLink } from 'react-router-dom';
 import logoOnly from '../../assets/LOGO-ONLY.png';
 import {
   LayoutDashboard, TrendingUp, Factory, Rocket, Building2,
-  FileSpreadsheet, Settings, LogOut, ChevronLeft, ChevronRight, BarChart2, Upload,
+  FileSpreadsheet, Settings, LogOut, ChevronLeft, ChevronRight, BarChart2, Upload, BookOpen,
 } from 'lucide-react';
 import { useState } from 'react';
 import useAuthStore from '../../stores/authStore';
@@ -17,6 +17,7 @@ const NAV_ITEMS = [
   { path: '/business-plan', label: 'Business Plan Entry', icon: FileSpreadsheet },
   { path: '/etl', label: 'ETL Management', icon: Settings },
   { path: '/data-upload', label: 'Upload Data', icon: Upload },
+  { path: '/emagazine', label: 'E-Magazine', icon: BookOpen },
 ];
 
 export default function Sidebar() {
