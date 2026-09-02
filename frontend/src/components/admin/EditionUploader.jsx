@@ -49,27 +49,32 @@ export default function EditionUploader({ onUploadSuccess }) {
     setMessage(null);
 
     try {
-      // For now, show a placeholder message
-      // Full PDF upload implementation would require additional backend API
+      // Create FormData for multipart upload
+      const uploadFormData = new FormData();
+      uploadFormData.append('title', formData.title);
+      uploadFormData.append('edition_number', formData.edition_number);
+      uploadFormData.append('published_date', formData.published_date);
+      uploadFormData.append('file', selectedFile);
+
+      // Upload the edition
+      const result = await emagazineAPI.uploadEdition(uploadFormData);
+
       setMessage({
-        type: 'info',
-        text: 'PDF upload ready. Backend endpoint to be implemented in Phase 4.2',
+        type: 'success',
+        text: `Edition uploaded successfully! ${result.total_pages} pages parsed and indexed.`,
       });
 
-      // Simulate successful upload
-      setTimeout(() => {
-        setMessage({
-          type: 'success',
-          text: 'Edition uploaded successfully!',
-        });
-        setFormData({ title: '', edition_number: '', published_date: '' });
-        setSelectedFile(null);
-        if (onUploadSuccess) onUploadSuccess();
-      }, 1500);
+      // Reset form
+      setFormData({ title: '', edition_number: '', published_date: '' });
+      setSelectedFile(null);
+
+      // Call success callback
+      if (onUploadSuccess) onUploadSuccess();
     } catch (error) {
+      const errorMsg = error.response?.data?.detail || error.message || 'Failed to upload edition';
       setMessage({
         type: 'error',
-        text: 'Failed to upload edition: ' + error.message,
+        text: errorMsg,
       });
     } finally {
       setLoading(false);

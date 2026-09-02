@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { Trash2, Edit, Plus, X, ChevronDown, ChevronUp } from 'lucide-react';
+import { Trash2, Edit, Plus, X, ChevronDown, ChevronUp, Paintbrush } from 'lucide-react';
 import emagazineAPI from '../../utils/emagazineApi';
+import HotspotEditor from '../emagazine/HotspotEditor';
 
 const ACTION_TYPES = [
   { value: 'contact', label: 'Contact', color: 'bg-purple-100 text-purple-700' },
@@ -16,6 +17,8 @@ export default function HotspotManager({ editionId }) {
   const [editingId, setEditingId] = useState(null);
   const [expandedPages, setExpandedPages] = useState({});
   const [formData, setFormData] = useState(null);
+  const [editorMode, setEditorMode] = useState('list'); // 'list' or 'visual'
+  const [editorPage, setEditorPage] = useState(1);
 
   useEffect(() => {
     loadHotspots();
@@ -110,17 +113,67 @@ export default function HotspotManager({ editionId }) {
             {hotspots.length} total hotspot{hotspots.length !== 1 ? 's' : ''}
           </p>
         </div>
-        <button
-          onClick={handleNewHotspot}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
-        >
-          <Plus size={18} />
-          New Hotspot
-        </button>
+        <div className="flex gap-2">
+          <button
+            onClick={() => setEditorMode(editorMode === 'list' ? 'visual' : 'list')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg transition font-medium ${
+              editorMode === 'visual'
+                ? 'bg-purple-600 text-white hover:bg-purple-700'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
+            }`}
+          >
+            <Paintbrush size={18} />
+            {editorMode === 'visual' ? 'Visual Editor' : 'Edit List'}
+          </button>
+          {editorMode === 'list' && (
+            <button
+              onClick={handleNewHotspot}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition font-medium"
+            >
+              <Plus size={18} />
+              New Hotspot
+            </button>
+          )}
+        </div>
       </div>
 
+      {/* Visual Editor Mode */}
+      {editorMode === 'visual' && (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <input
+              type="number"
+              min="1"
+              value={editorPage}
+              onChange={(e) => setEditorPage(parseInt(e.target.value) || 1)}
+              className="w-20 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              placeholder="Page #"
+            />
+            <span className="py-2 text-sm text-gray-600">
+              Page {editorPage}
+            </span>
+          </div>
+          <HotspotEditor
+            hotspots={hotspots.filter(h => h.page_number === editorPage)}
+            editionId={editionId}
+            pageNumber={editorPage}
+            onCreateHotspot={(hotspotData) => {
+              setFormData(hotspotData);
+              setEditingId('new');
+              setEditorMode('list');
+            }}
+            onUpdateHotspot={(hotspotId, hotspotData) => {
+              setFormData(hotspotData);
+              setEditingId(hotspotId);
+              setEditorMode('list');
+            }}
+            onDeleteHotspot={handleDelete}
+          />
+        </div>
+      )}
+
       {/* Form */}
-      {editingId && (
+      {editingId && editorMode === 'list' && (
         <HotspotForm
           data={formData}
           setData={setFormData}
@@ -133,6 +186,7 @@ export default function HotspotManager({ editionId }) {
       )}
 
       {/* Hotspots by Page */}
+      {editorMode === 'list' && (
       <div className="space-y-3">
         {sortedPages.length === 0 ? (
           <div className="text-center py-8 bg-gray-50 rounded-lg">
@@ -176,6 +230,7 @@ export default function HotspotManager({ editionId }) {
           ))
         )}
       </div>
+      )}
     </div>
   );
 }

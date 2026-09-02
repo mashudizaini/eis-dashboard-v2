@@ -3,13 +3,16 @@ E-Magazine Router
 Provides endpoints for e-magazine content, search, and analytics
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, Form
 from sqlalchemy import select, and_, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import func
 from pydantic import BaseModel
 from typing import Optional, List
 from datetime import datetime
+from pathlib import Path
+import shutil
+import os
 
 from app.database import get_db
 from app.models import (
@@ -17,6 +20,12 @@ from app.models import (
     EMagazineContent,
     EMagazineHotspot,
     EMagazineAnalytics,
+)
+from app.utils.pdf_parser import (
+    extract_text_from_pdf,
+    split_text_by_pages,
+    populate_database,
+    check_edition_exists,
 )
 
 
@@ -71,6 +80,25 @@ class AnalyticsTrack(BaseModel):
     hotspot_id: Optional[int] = None
     search_query: Optional[str] = None
     metadata: Optional[dict] = None
+
+
+class UploadEditionRequest(BaseModel):
+    title: str
+    edition_number: int
+    published_date: str  # Format: YYYY-MM-DD
+
+
+class UploadEditionResponse(BaseModel):
+    id: int
+    title: str
+    edition_number: int
+    published_date: str
+    total_pages: int
+    created_at: str
+    message: str
+
+    class Config:
+        from_attributes = True
 
 
 # ─────────────────────────────────────────
@@ -190,6 +218,91 @@ async def get_table_of_contents(edition_id: int, db: AsyncSession = Depends(get_
         })
 
     return toc
+
+
+@router.post("/editions/upload", response_model=UploadEditionResponse)
+async def upload_edition(
+    title: str = Form(...),
+    edition_number: int = Form(...),
+    published_date: str = Form(...),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload and parse a new PDF edition"""
+
+    # Validate file is PDF
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+
+    # Check edition doesn't already exist
+    if await check_edition_exists(edition_number, db):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Edition number {edition_number} already exists"
+        )
+
+    # Validate published_date format
+    try:
+        datetime.strptime(published_date, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Published date must be in YYYY-MM-DD format"
+        )
+
+    # Create upload directory if it doesn't exist
+    upload_dir = Path("/home/user/eis-dashboard-v2/backend/emagazine_archive")
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save uploaded file
+    try:
+        file_path = upload_dir / f"emagazine_edition_{edition_number}_{file.filename}"
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    # Extract and parse PDF
+    try:
+        extract_result = extract_text_from_pdf(str(file_path))
+        if not extract_result["success"]:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to extract PDF text: {extract_result['error']}"
+            )
+
+        # Split text by pages
+        pages_content = split_text_by_pages(extract_result["text"])
+
+        # Populate database
+        edition = await populate_database(
+            title,
+            edition_number,
+            published_date,
+            str(file_path),
+            pages_content,
+            db,
+        )
+
+        return UploadEditionResponse(
+            id=edition.id,
+            title=edition.title,
+            edition_number=edition.edition_number,
+            published_date=str(edition.published_date),
+            total_pages=edition.total_pages,
+            created_at=edition.created_at.isoformat(),
+            message=f"Edition uploaded successfully. {edition.total_pages} pages parsed and indexed."
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Clean up file on error
+        try:
+            file_path.unlink()
+        except:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF: {str(e)}")
 
 
 @router.post("/analytics")
